@@ -335,6 +335,7 @@ func (ec *eventConsumer) consumeTxSigningEvent() error {
 				msg.TxID,
 				msg.NetworkInternalCode,
 				ec.signingResultQueue,
+				msg.DerivationPath,
 			)
 		case types.KeyTypeEd25519:
 			session, err = ec.node.CreateSigningSession(
@@ -343,6 +344,7 @@ func (ec *eventConsumer) consumeTxSigningEvent() error {
 				msg.TxID,
 				msg.NetworkInternalCode,
 				ec.signingResultQueue,
+				msg.DerivationPath,
 			)
 
 		}

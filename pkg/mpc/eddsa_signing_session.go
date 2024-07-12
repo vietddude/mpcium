@@ -27,6 +27,7 @@ type eddsaSigningSession struct {
 	tx                  *big.Int
 	txID                string
 	networkInternalCode string
+	derivationPath      []uint32
 }
 
 func newEDDSASigningSession(
@@ -43,6 +44,7 @@ func newEDDSASigningSession(
 	keyinfoStore keyinfo.Store,
 	resultQueue messaging.MessageQueue,
 	identityStore identity.Store,
+	derivationPath []uint32,
 ) *eddsaSigningSession {
 	return &eddsaSigningSession{
 		session: session{
@@ -76,6 +78,7 @@ func newEDDSASigningSession(
 		endCh:               make(chan *common.SignatureData),
 		txID:                txID,
 		networkInternalCode: networkInternalCode,
+		derivationPath:      derivationPath,
 	}
 }
 

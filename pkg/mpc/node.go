@@ -41,8 +41,8 @@ type Node struct {
 	keyinfoStore   keyinfo.Store
 	ecdsaPreParams []*keygen.LocalPreParams
 	identityStore  identity.Store
-
-	peerRegistry PeerRegistry
+	chainCode      []byte
+	peerRegistry   PeerRegistry
 }
 
 func PartyIDToRoutingDest(partyID *tss.PartyID) string {
@@ -165,6 +165,7 @@ func (p *Node) CreateSigningSession(
 	txID string,
 	networkInternalCode string,
 	resultQueue messaging.MessageQueue,
+	derivationPath []uint32,
 ) (SigningSession, error) {
 	version := p.getVersion(sessionType, walletID)
 	keyInfo, err := p.getKeyInfo(sessionType, walletID)
@@ -211,6 +212,7 @@ func (p *Node) CreateSigningSession(
 			p.keyinfoStore,
 			resultQueue,
 			p.identityStore,
+			derivationPath,
 		), nil
 
 	case SessionTypeEDDSA:
@@ -228,6 +230,7 @@ func (p *Node) CreateSigningSession(
 			p.keyinfoStore,
 			resultQueue,
 			p.identityStore,
+			derivationPath,
 		), nil
 	}
 
