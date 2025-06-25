@@ -65,3 +65,7 @@ func (kl *Limiter[T]) Enqueue(req T) bool {
 func (kl *Limiter[T]) QueueLen() int {
 	return len(kl.queue)
 }
+
+func (kl *Limiter[T]) Stop() {
+	close(kl.queue)
+}

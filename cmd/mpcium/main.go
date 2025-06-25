@@ -20,6 +20,7 @@ import (
 	"github.com/fystack/mpcium/pkg/messaging"
 	"github.com/fystack/mpcium/pkg/mpc/node"
 	"github.com/hashicorp/consul/api"
+	tssLog "github.com/ipfs/go-log"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/viper"
 	"github.com/urfave/cli/v3"
@@ -84,6 +85,7 @@ func main() {
 }
 
 func runNode(ctx context.Context, c *cli.Command) error {
+	tssLog.SetDebugLogging()
 	nodeName := c.String("name")
 	decryptPrivateKey := c.Bool("decrypt-private-key")
 	usePrompts := c.Bool("prompt-credentials")

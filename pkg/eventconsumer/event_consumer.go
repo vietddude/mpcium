@@ -80,7 +80,7 @@ func NewEventConsumer(
 		cleanupStopChan:      make(chan struct{}),
 		mpcThreshold:         viper.GetInt("mpc_threshold"),
 		identityStore:        identityStore,
-		keygenLimiter:        limiter.NewLimiter[keygenRequest](100, 2, 3),
+		keygenLimiter:        limiter.NewLimiter[keygenRequest](100, 1, 3),
 	}
 
 	// Start background cleanup goroutine
@@ -519,7 +519,7 @@ func (ec *eventConsumer) Close() error {
 	close(ec.cleanupStopChan)
 
 	// Signal keygen worker pool to stop
-	ec.stopKeygenWorkers()
+	ec.keygenLimiter.Stop()
 
 	err := ec.keyGenerationSub.Unsubscribe()
 	if err != nil {
@@ -531,75 +531,4 @@ func (ec *eventConsumer) Close() error {
 	}
 
 	return nil
-}
-
-func (ec *eventConsumer) keygenWorkerFunc(workerID int, req keygenRequest) {
-	logger.Info("Keygen worker processing message",
-		"workerID", workerID,
-		"order", req.order,
-		"retryCount", req.retryCount)
-	var msg types.GenerateKeyMessage
-	if err := json.Unmarshal(req.msg.Data, &msg); err != nil {
-		logger.Error("Failed to unmarshal keygen message", err)
-		req.msg.Nak()
-		return
-	}
-	logger.Info("Received key generation event", "msg", msg)
-
-	if err := ec.identityStore.VerifyInitiatorMessage(&msg); err != nil {
-		logger.Error("Failed to verify initiator message", err)
-		req.msg.Nak()
-		return
-	}
-
-	walletID := msg.WalletID
-	ec.node.GetPeerRegistry().PutReadyKeygen(ec.node.ID(), walletID)
-	if ec.node.GetPeerRegistry().GetReadyKeygen(string(req.msg.Data), ec.mpcThreshold+1) {
-		// Delete signal in the consul KV
-		ec.node.GetPeerRegistry().DeleteReadyKeygen(ec.node.ID(), walletID)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := ec.handleKeyGenerationEvent(ctx, walletID); err != nil {
-		logger.Error("Failed to handle key generation event", err,
-			"workerID", workerID,
-			"order", req.order,
-			"retryCount", req.retryCount)
-
-		if req.retryCount < ec.keygenLimiter.MaxRetries {
-			req.retryCount++
-			logger.Info("Retrying keygen request",
-				"order", req.order,
-				"retryCount", req.retryCount,
-				"maxRetries", ec.keygenLimiter.MaxRetries)
-
-			newOrder := ec.keygenLimiter.GetNextOrder()
-			retryReq := &keygenRequest{
-				msg:        req.msg,
-				retryCount: req.retryCount,
-				timestamp:  time.Now(),
-				order:      newOrder,
-			}
-
-			if !ec.keygenLimiter.Enqueue(*retryReq) {
-				logger.Warn("Keygen queue full, cannot retry",
-					"order", req.order,
-					"retryCount", req.retryCount)
-				req.msg.Nak() // Let NATS handle retry
-			}
-		} else {
-			logger.Error("Keygen request failed after max retries", nil,
-				"order", req.order,
-				"retryCount", req.retryCount,
-				"maxRetries", ec.keygenLimiter.MaxRetries)
-			req.msg.Nak() // Let NATS handle retry or move to dead letter queue
-		}
-	} else {
-		logger.Info("Keygen request completed successfully",
-			"workerID", workerID,
-			"order", req.order,
-			"retryCount", req.retryCount)
-	}
 }

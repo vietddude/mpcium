@@ -27,7 +27,7 @@ type Party interface {
 	PartyIDs() []*tss.PartyID
 	GetSaveData() []byte
 	SetSaveData(saveData []byte)
-	ClassifyMsg(msgBytes []byte) (uint8, bool, error)
+	ClassifyMsg(msgBytes []byte) (string, bool, error)
 	InCh() chan types.TssMessage
 	OutCh() chan tss.Message
 	ErrCh() chan error

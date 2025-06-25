@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/bnb-chain/tss-lib/v2/common"
 	"github.com/bnb-chain/tss-lib/v2/ecdsa/keygen"
@@ -49,19 +50,14 @@ func (s *ECDSAParty) SetSaveData(saveData []byte) {
 	s.saveData = &localSaveData
 }
 
-func (s *ECDSAParty) ClassifyMsg(msgBytes []byte) (uint8, bool, error) {
+func (s *ECDSAParty) ClassifyMsg(msgBytes []byte) (string, bool, error) {
 	msg := &any.Any{}
 	if err := proto.Unmarshal(msgBytes, msg); err != nil {
-		return 0, false, err
+		return "", false, err
 	}
 
 	_, isBroadcast := ecdsaBroadcastMessages[msg.TypeUrl]
-
-	round := ecdsaMsgURL2Round[msg.TypeUrl]
-	if round > 4 {
-		round = round - 4
-	}
-	return round, isBroadcast, nil
+	return strings.Split(msg.TypeUrl, ".")[len(strings.Split(msg.TypeUrl, "."))-1], isBroadcast, nil
 }
 
 func (s *ECDSAParty) StartKeygen(ctx context.Context, send func(tss.Message), finish func([]byte)) {
