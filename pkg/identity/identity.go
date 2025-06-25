@@ -102,7 +102,12 @@ func NewFileStore(identityDir, nodeName string, decrypt bool) (*fileStore, error
 		identityFilePath := filepath.Join(identityDir, fmt.Sprintf("%s_identity.json", nodeName))
 		data, err := os.ReadFile(identityFilePath)
 		if err != nil {
-			return nil, fmt.Errorf("missing identity file for node %s (%s): %w", nodeName, nodeID, err)
+			return nil, fmt.Errorf(
+				"missing identity file for node %s (%s): %w",
+				nodeName,
+				nodeID,
+				err,
+			)
 		}
 
 		var identity NodeIdentity
@@ -112,8 +117,12 @@ func NewFileStore(identityDir, nodeName string, decrypt bool) (*fileStore, error
 
 		// Verify that the nodeID in peers.json matches the one in the identity file
 		if identity.NodeID != nodeID {
-			return nil, fmt.Errorf("node ID mismatch for %s: %s in peers.json vs %s in identity file",
-				nodeName, nodeID, identity.NodeID)
+			return nil, fmt.Errorf(
+				"node ID mismatch for %s: %s in peers.json vs %s in identity file",
+				nodeName,
+				nodeID,
+				identity.NodeID,
+			)
 		}
 
 		key, err := hex.DecodeString(identity.PublicKey)

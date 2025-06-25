@@ -121,9 +121,13 @@ func runNode(ctx context.Context, c *cli.Command) error {
 	defer natsConn.Close()
 
 	pubsub := messaging.NewNATSPubSub(natsConn)
-	signingStream, err := messaging.NewJetStreamPubSub(natsConn, event.SigningPublisherStream, []string{
-		event.SigningRequestTopic,
-	})
+	signingStream, err := messaging.NewJetStreamPubSub(
+		natsConn,
+		event.SigningPublisherStream,
+		[]string{
+			event.SigningRequestTopic,
+		},
+	)
 	if err != nil {
 		logger.Fatal("Failed to create JetStream PubSub", err)
 	}
@@ -301,7 +305,9 @@ func NewConsulClient(addr string) *api.Client {
 	return consulClient
 }
 
-func LoadPeersFromConsul(consulClient *api.Client) []config.Peer { // Create a Consul Key-Value store client
+func LoadPeersFromConsul(
+	consulClient *api.Client,
+) []config.Peer { // Create a Consul Key-Value store client
 	kv := consulClient.KV()
 	peers, err := config.LoadPeersFromConsul(kv, "mpc_peers/")
 	if err != nil {

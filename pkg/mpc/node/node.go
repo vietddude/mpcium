@@ -35,7 +35,16 @@ type Node struct {
 	peerRegistry *registry
 }
 
-func NewNode(nodeID string, peerIDs []string, pubSub messaging.PubSub, direct messaging.DirectMessaging, kvstore kvstore.KVStore, keyinfoStore keyinfo.Store, identityStore identity.Store, peerRegistry *registry) *Node {
+func NewNode(
+	nodeID string,
+	peerIDs []string,
+	pubSub messaging.PubSub,
+	direct messaging.DirectMessaging,
+	kvstore kvstore.KVStore,
+	keyinfoStore keyinfo.Store,
+	identityStore identity.Store,
+	peerRegistry *registry,
+) *Node {
 	go peerRegistry.WatchPeersReady()
 
 	return &Node{
@@ -49,18 +58,34 @@ func NewNode(nodeID string, peerIDs []string, pubSub messaging.PubSub, direct me
 		peerRegistry:  peerRegistry,
 	}
 }
+func (n *Node) GetPeerRegistry() *registry {
+	return n.peerRegistry
+}
 
 func (n *Node) ID() string {
 	return n.nodeID
 }
 
-func (n *Node) CreateKeygenSession(keyType types.KeyType, walletID string, threshold int, successQueue messaging.MessageQueue) (session.Session, error) {
+func (n *Node) CreateKeygenSession(
+	keyType types.KeyType,
+	walletID string,
+	threshold int,
+	successQueue messaging.MessageQueue,
+) (session.Session, error) {
 	if n.peerRegistry.GetReadyPeersCount() < int64(threshold+1) {
-		return nil, fmt.Errorf("not enough peers to create gen session! expected %d, got %d", threshold+1, n.peerRegistry.GetReadyPeersCount())
+		return nil, fmt.Errorf(
+			"not enough peers to create gen session! expected %d, got %d",
+			threshold+1,
+			n.peerRegistry.GetReadyPeersCount(),
+		)
 	}
 
 	readyPeerIDs := n.peerRegistry.GetReadyPeersIncludeSelf()
-	selfPartyID, allPartyIDs := n.generatePartyIDs(session.PurposeKeygen, readyPeerIDs, DefaultVersion)
+	selfPartyID, allPartyIDs := n.generatePartyIDs(
+		session.PurposeKeygen,
+		readyPeerIDs,
+		DefaultVersion,
+	)
 	switch keyType {
 	case types.KeyTypeSecp256k1:
 		preparams, err := n.getECDSAPreParams(false)
@@ -99,9 +124,20 @@ func (n *Node) CreateKeygenSession(keyType types.KeyType, walletID string, thres
 	}
 }
 
-func (n *Node) CreateSigningSession(keyType types.KeyType, walletID string, txID string, partyVersion int, threshold int, successQueue messaging.MessageQueue) (session.Session, error) {
+func (n *Node) CreateSigningSession(
+	keyType types.KeyType,
+	walletID string,
+	txID string,
+	partyVersion int,
+	threshold int,
+	successQueue messaging.MessageQueue,
+) (session.Session, error) {
 	if n.peerRegistry.GetReadyPeersCount() < int64(threshold+1) {
-		return nil, fmt.Errorf("not enough peers to create gen session! expected %d, got %d", threshold+1, n.peerRegistry.GetReadyPeersCount())
+		return nil, fmt.Errorf(
+			"not enough peers to create gen session! expected %d, got %d",
+			threshold+1,
+			n.peerRegistry.GetReadyPeersCount(),
+		)
 	}
 
 	readyPeerIDs := n.peerRegistry.GetReadyPeersIncludeSelf()
@@ -154,15 +190,30 @@ func (n *Node) CreateSigningSession(keyType types.KeyType, walletID string, txID
 	}
 }
 
-func (n *Node) CreateResharingSession(isOldParty bool, keyType types.KeyType, walletID string, threshold int, partyVersion int, successQueue messaging.MessageQueue) (session.Session, error) {
+func (n *Node) CreateResharingSession(
+	isOldParty bool,
+	keyType types.KeyType,
+	walletID string,
+	threshold int,
+	partyVersion int,
+	successQueue messaging.MessageQueue,
+) (session.Session, error) {
 	if n.peerRegistry.GetReadyPeersCount() < int64(threshold+1) {
-		return nil, fmt.Errorf("not enough peers to create resharing session! expected %d, got %d", threshold+1, n.peerRegistry.GetReadyPeersCount())
+		return nil, fmt.Errorf(
+			"not enough peers to create resharing session! expected %d, got %d",
+			threshold+1,
+			n.peerRegistry.GetReadyPeersCount(),
+		)
 	}
 	readyPeerIDs := n.peerRegistry.GetReadyPeersIncludeSelf()
 	var selfPartyID *tss.PartyID
 	var partyIDs []*tss.PartyID
 	if isOldParty {
-		selfPartyID, partyIDs = n.generatePartyIDs(session.PurposeKeygen, readyPeerIDs, partyVersion)
+		selfPartyID, partyIDs = n.generatePartyIDs(
+			session.PurposeKeygen,
+			readyPeerIDs,
+			partyVersion,
+		)
 	} else {
 		selfPartyID, partyIDs = n.generatePartyIDs(session.PurposeReshare, readyPeerIDs, partyVersion+1) // Increment version for new parties
 	}
@@ -173,7 +224,18 @@ func (n *Node) CreateResharingSession(isOldParty bool, keyType types.KeyType, wa
 		if err != nil {
 			return nil, fmt.Errorf("failed to get preparams: %w", err)
 		}
-		ecdsaSession := session.NewECDSASession(walletID, selfPartyID, partyIDs, threshold, *preparams, n.pubSub, n.direct, n.identityStore, n.kvstore, n.keyinfoStore)
+		ecdsaSession := session.NewECDSASession(
+			walletID,
+			selfPartyID,
+			partyIDs,
+			threshold,
+			*preparams,
+			n.pubSub,
+			n.direct,
+			n.identityStore,
+			n.kvstore,
+			n.keyinfoStore,
+		)
 		if isOldParty {
 			saveData, err := ecdsaSession.GetSaveData(partyVersion)
 			if err != nil {
@@ -193,7 +255,17 @@ func (n *Node) CreateResharingSession(isOldParty bool, keyType types.KeyType, wa
 		}
 		return ecdsaSession, nil
 	case types.KeyTypeEd25519:
-		eddsaSession := session.NewEDDSASession(walletID, selfPartyID, partyIDs, threshold, n.pubSub, n.direct, n.identityStore, n.kvstore, n.keyinfoStore)
+		eddsaSession := session.NewEDDSASession(
+			walletID,
+			selfPartyID,
+			partyIDs,
+			threshold,
+			n.pubSub,
+			n.direct,
+			n.identityStore,
+			n.kvstore,
+			n.keyinfoStore,
+		)
 		saveData, err := eddsaSession.GetSaveData(partyVersion)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get save data: %w", err)
@@ -281,7 +353,11 @@ func (n *Node) getECDSAPreParams(isOldParty bool) (*keygen.LocalPreParams, error
 // generatePartyIDs generates the party IDs for the given purpose and version
 // It returns the self party ID and all party IDs
 // It also sorts the party IDs in place
-func (n *Node) generatePartyIDs(purpose session.Purpose, readyPeerIDs []string, version int) (self *tss.PartyID, all []*tss.PartyID) {
+func (n *Node) generatePartyIDs(
+	purpose session.Purpose,
+	readyPeerIDs []string,
+	version int,
+) (self *tss.PartyID, all []*tss.PartyID) {
 	// Pre-allocate slice with exact size needed
 	partyIDs := make([]*tss.PartyID, 0, len(readyPeerIDs))
 

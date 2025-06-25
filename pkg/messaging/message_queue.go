@@ -36,7 +36,11 @@ type NATsMessageQueueManager struct {
 	js        jetstream.JetStream
 }
 
-func NewNATsMessageQueueManager(queueName string, subjectWildCards []string, nc *nats.Conn) *NATsMessageQueueManager {
+func NewNATsMessageQueueManager(
+	queueName string,
+	subjectWildCards []string,
+	nc *nats.Conn,
+) *NATsMessageQueueManager {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		logger.Fatal("Error creating JetStream context: ", err)

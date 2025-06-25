@@ -45,7 +45,10 @@ func generateInitiatorIdentity(ctx context.Context, c *cli.Command) error {
 
 	// Check for existing identity file
 	if _, err := os.Stat(identityPath); err == nil && !overwrite {
-		return fmt.Errorf("identity file already exists: %s (use --overwrite to force)", identityPath)
+		return fmt.Errorf(
+			"identity file already exists: %s (use --overwrite to force)",
+			identityPath,
+		)
 	}
 
 	// Check for existing key files
@@ -55,7 +58,10 @@ func generateInitiatorIdentity(ctx context.Context, c *cli.Command) error {
 
 	if encrypt {
 		if _, err := os.Stat(encKeyPath); err == nil && !overwrite {
-			return fmt.Errorf("encrypted key file already exists: %s (use --overwrite to force)", encKeyPath)
+			return fmt.Errorf(
+				"encrypted key file already exists: %s (use --overwrite to force)",
+				encKeyPath,
+			)
 		}
 	}
 

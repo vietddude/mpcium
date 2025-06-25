@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/fystack/mpcium/pkg/kvstore"
 	"github.com/fystack/mpcium/pkg/logger"
-	"github.com/dgraph-io/badger/v4"
 )
 
 func main() {

@@ -47,7 +47,13 @@ func main() {
 			}
 
 			if walletID != "" {
-				kv.Put(&api.KVPair{Key: fmt.Sprintf("threshold_keyinfo/ecdsa:%s", walletID), Value: pair.Value}, nil)
+				kv.Put(
+					&api.KVPair{
+						Key:   fmt.Sprintf("threshold_keyinfo/ecdsa:%s", walletID),
+						Value: pair.Value,
+					},
+					nil,
+				)
 				kv.Delete(key, nil)
 
 			}

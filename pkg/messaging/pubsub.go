@@ -145,7 +145,12 @@ type jetStreamPubSub struct {
 	js     jetstream.JetStream
 }
 
-func NewJetStreamPubSub(natsConn *nats.Conn, streamName string, subjects []string, opts ...StreamPubsubOption) (StreamPubsub, error) {
+func NewJetStreamPubSub(
+	natsConn *nats.Conn,
+	streamName string,
+	subjects []string,
+	opts ...StreamPubsubOption,
+) (StreamPubsub, error) {
 	config := streamPubSubConfig{
 		streamName:          streamName,
 		subjects:            subjects,
@@ -219,7 +224,11 @@ func sanitizeConsumerName(name string) string {
 	return name
 }
 
-func (j *jetStreamPubSub) Subscribe(name string, topic string, handler func(msg jetstream.Msg)) (Subscription, error) {
+func (j *jetStreamPubSub) Subscribe(
+	name string,
+	topic string,
+	handler func(msg jetstream.Msg),
+) (Subscription, error) {
 
 	logger.Info("Subscribing to topic", sanitizeConsumerName(name), topic)
 	consumerConfig := jetstream.ConsumerConfig{
@@ -234,7 +243,11 @@ func (j *jetStreamPubSub) Subscribe(name string, topic string, handler func(msg 
 	}
 
 	logger.Info("Creating consumer", "config", consumerConfig, "stream", j.config.streamName)
-	consumer, err := j.js.CreateOrUpdateConsumer(context.Background(), j.config.streamName, consumerConfig)
+	consumer, err := j.js.CreateOrUpdateConsumer(
+		context.Background(),
+		j.config.streamName,
+		consumerConfig,
+	)
 
 	if err != nil {
 		logger.Error("❌ Failed to create or update consumer:", err)

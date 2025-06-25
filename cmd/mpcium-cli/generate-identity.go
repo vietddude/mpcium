@@ -22,7 +22,7 @@ type Identity struct {
 	NodeName  string `json:"node_name"`
 	NodeID    string `json:"node_id"`
 	PublicKey string `json:"public_key"` // Hex-encoded
-	CreatedAt string `djson:"created_at"`
+	CreatedAt string `                  djson:"created_at"`
 }
 
 // requestPassword prompts for password, confirms it, validates strength, and reminds to back it up
@@ -125,7 +125,12 @@ func generateIdentity(ctx context.Context, c *cli.Command) error {
 }
 
 // Generate identity for a node
-func generateNodeIdentity(nodeName, nodeID, identityDir string, encrypt bool, passphrase string, overwrite bool) error {
+func generateNodeIdentity(
+	nodeName, nodeID, identityDir string,
+	encrypt bool,
+	passphrase string,
+	overwrite bool,
+) error {
 	// Generate Ed25519 keypair
 	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -165,7 +170,10 @@ func generateNodeIdentity(nodeName, nodeID, identityDir string, encrypt bool, pa
 
 		// Check if encrypted key file already exists
 		if _, err := os.Stat(encryptedKeyPath); err == nil && !overwrite {
-			return fmt.Errorf("encrypted key file %s already exists. Use --overwrite to force", encryptedKeyPath)
+			return fmt.Errorf(
+				"encrypted key file %s already exists. Use --overwrite to force",
+				encryptedKeyPath,
+			)
 		}
 
 		// Encrypt with age and passphrase
@@ -193,7 +201,12 @@ func generateNodeIdentity(nodeName, nodeID, identityDir string, encrypt bool, pa
 			return fmt.Errorf("failed to finalize age encryption: %w", err)
 		}
 
-		fmt.Printf("Generated encrypted identity for %s: %s, %s\n", nodeName, identityPath, encryptedKeyPath)
+		fmt.Printf(
+			"Generated encrypted identity for %s: %s, %s\n",
+			nodeName,
+			identityPath,
+			encryptedKeyPath,
+		)
 	} else {
 		// Check if unencrypted key file already exists
 		if _, err := os.Stat(privateKeyPath); err == nil && !overwrite {

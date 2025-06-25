@@ -19,7 +19,11 @@ func Init(env string, debug bool) {
 	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
 	if env != "production" {
 		Log = zerolog.New(
-			zerolog.ConsoleWriter{Out: os.Stderr, NoColor: false, TimeFormat: "2006-01-02 15:04:05.000"},
+			zerolog.ConsoleWriter{
+				Out:        os.Stderr,
+				NoColor:    false,
+				TimeFormat: "2006-01-02 15:04:05.000",
+			},
 		).With().Timestamp().Logger()
 	} else {
 		Log = zerolog.New(os.Stdout).With().Timestamp().Logger()
@@ -36,7 +40,10 @@ func Debug(msg string, keyValues ...interface{}) {
 
 	l := len(keyValues)
 	if l%2 != 0 {
-		Log.Warn().Caller().Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
+		Log.Warn().
+			Caller().
+			Interface("Unknown Key", keyValues).
+			Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
 	} else {
 		ctx := Log.Debug()
 
@@ -61,7 +68,10 @@ func Info(msg string, keyValues ...interface{}) {
 
 	l := len(keyValues)
 	if l%2 != 0 {
-		Log.Warn().Caller().Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
+		Log.Warn().
+			Caller().
+			Interface("Unknown Key", keyValues).
+			Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
 	} else {
 		ctx := Log.Info()
 
@@ -85,7 +95,10 @@ func Warn(msg string, keyValues ...interface{}) {
 
 	l := len(keyValues)
 	if l%2 != 0 {
-		Log.Warn().Caller().Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
+		Log.Warn().
+			Caller().
+			Interface("Unknown Key", keyValues).
+			Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
 	} else {
 		ctx := Log.Warn()
 

@@ -42,7 +42,15 @@ type KeyComposerFn func(id string) string
 type Session interface {
 	StartKeygen(ctx context.Context, send func(tss.Message), finish func([]byte))
 	StartSigning(ctx context.Context, msg *big.Int, send func(tss.Message), finish func([]byte))
-	StartResharing(ctx context.Context, oldPartyIDs []*tss.PartyID, newPartyIDs []*tss.PartyID, oldThreshold int, newThreshold int, send func(tss.Message), finish func([]byte))
+	StartResharing(
+		ctx context.Context,
+		oldPartyIDs []*tss.PartyID,
+		newPartyIDs []*tss.PartyID,
+		oldThreshold int,
+		newThreshold int,
+		send func(tss.Message),
+		finish func([]byte),
+	)
 
 	GetSaveData(version int) ([]byte, error)
 	GetPublicKey(data []byte) ([]byte, error)
@@ -138,7 +146,17 @@ func (s *session) Send(msg tss.Message) {
 	for i, to := range routing.To {
 		toNodeIDs[i] = getRoutingFromPartyID(to)
 	}
-	logger.Debug("Sending message", "from", routing.From.Moniker, "to", toNodeIDs, "isBroadcast", routing.IsBroadcast, "round", round)
+	logger.Debug(
+		"Sending message",
+		"from",
+		routing.From.Moniker,
+		"to",
+		toNodeIDs,
+		"isBroadcast",
+		routing.IsBroadcast,
+		"round",
+		round,
+	)
 
 	if routing.IsBroadcast && len(routing.To) == 0 {
 		err := s.pubSub.Publish(s.topicComposer.ComposeBroadcastTopic(), msgBytes)
@@ -168,10 +186,13 @@ func (s *session) Listen() {
 
 	broadcast := func() {
 		defer wg.Done()
-		sub, err := s.pubSub.Subscribe(s.topicComposer.ComposeBroadcastTopic(), func(natMsg *nats.Msg) {
-			msg := natMsg.Data
-			s.receive(msg)
-		})
+		sub, err := s.pubSub.Subscribe(
+			s.topicComposer.ComposeBroadcastTopic(),
+			func(natMsg *nats.Msg) {
+				msg := natMsg.Data
+				s.receive(msg)
+			},
+		)
 
 		if err != nil {
 			s.errCh <- fmt.Errorf("failed to subscribe to broadcast topic %s: %w", s.topicComposer.ComposeBroadcastTopic(), err)
@@ -216,7 +237,12 @@ func (s *session) WaitReady(ctx context.Context) error {
 }
 
 // SaveKey saves the key to the keyinfo store and the kvstore
-func (s *session) SaveKey(participantPeerIDs []string, threshold int, version int, data []byte) (err error) {
+func (s *session) SaveKey(
+	participantPeerIDs []string,
+	threshold int,
+	version int,
+	data []byte,
+) (err error) {
 	keyInfo := keyinfo.KeyInfo{
 		ParticipantPeerIDs: participantPeerIDs,
 		Threshold:          threshold,
@@ -313,7 +339,17 @@ func (s *session) receive(rawMsg []byte) {
 			s.errCh <- fmt.Errorf("failed to classify message: %w", err)
 			return
 		}
-		logger.Debug("Received message", "from", msg.From.Moniker, "round", round, "isBroadcast", msg.IsBroadcast, "isToSelf", isToSelf)
+		logger.Debug(
+			"Received message",
+			"from",
+			msg.From.Moniker,
+			"round",
+			round,
+			"isBroadcast",
+			msg.IsBroadcast,
+			"isToSelf",
+			isToSelf,
+		)
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.party.InCh() <- *msg

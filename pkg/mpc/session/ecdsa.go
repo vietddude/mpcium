@@ -23,7 +23,18 @@ type ECDSASession struct {
 	*session
 }
 
-func NewECDSASession(walletID string, partyID *tss.PartyID, partyIDs []*tss.PartyID, threshold int, preParams keygen.LocalPreParams, pubSub messaging.PubSub, direct messaging.DirectMessaging, identityStore identity.Store, kvstore kvstore.KVStore, keyinfoStore keyinfo.Store) *ECDSASession {
+func NewECDSASession(
+	walletID string,
+	partyID *tss.PartyID,
+	partyIDs []*tss.PartyID,
+	threshold int,
+	preParams keygen.LocalPreParams,
+	pubSub messaging.PubSub,
+	direct messaging.DirectMessaging,
+	identityStore identity.Store,
+	kvstore kvstore.KVStore,
+	keyinfoStore keyinfo.Store,
+) *ECDSASession {
 	s := NewSession(PurposeKeygen, walletID, pubSub, direct, identityStore, kvstore, keyinfoStore)
 	s.party = party.NewECDSAParty(walletID, partyID, partyIDs, threshold, preParams, s.errCh)
 	s.topicComposer = &TopicComposer{
@@ -42,15 +53,32 @@ func NewECDSASession(walletID string, partyID *tss.PartyID, partyIDs []*tss.Part
 	}
 }
 
-func (s *ECDSASession) StartKeygen(ctx context.Context, send func(tss.Message), finish func([]byte)) {
+func (s *ECDSASession) StartKeygen(
+	ctx context.Context,
+	send func(tss.Message),
+	finish func([]byte),
+) {
 	s.party.StartKeygen(ctx, send, finish)
 }
 
-func (s *ECDSASession) StartSigning(ctx context.Context, msg *big.Int, send func(tss.Message), finish func([]byte)) {
+func (s *ECDSASession) StartSigning(
+	ctx context.Context,
+	msg *big.Int,
+	send func(tss.Message),
+	finish func([]byte),
+) {
 	s.party.StartSigning(ctx, msg, send, finish)
 }
 
-func (s *ECDSASession) StartResharing(ctx context.Context, oldPartyIDs []*tss.PartyID, newPartyIDs []*tss.PartyID, oldThreshold int, newThreshold int, send func(tss.Message), finish func([]byte)) {
+func (s *ECDSASession) StartResharing(
+	ctx context.Context,
+	oldPartyIDs []*tss.PartyID,
+	newPartyIDs []*tss.PartyID,
+	oldThreshold int,
+	newThreshold int,
+	send func(tss.Message),
+	finish func([]byte),
+) {
 	s.party.StartResharing(ctx, oldPartyIDs, newPartyIDs, oldThreshold, newThreshold, send, finish)
 }
 
@@ -73,7 +101,10 @@ func (s *ECDSASession) GetPublicKey(data []byte) ([]byte, error) {
 	return pubKeyBytes, nil
 }
 
-func (s *ECDSASession) VerifySignature(msg []byte, signature []byte) (*common.SignatureData, error) {
+func (s *ECDSASession) VerifySignature(
+	msg []byte,
+	signature []byte,
+) (*common.SignatureData, error) {
 	signatureData := &common.SignatureData{}
 	err := json.Unmarshal(signature, signatureData)
 	if err != nil {

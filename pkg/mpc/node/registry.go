@@ -24,6 +24,9 @@ type PeerRegistry interface {
 	Resign() error
 	GetReadyPeersCount() int64
 	GetReadyPeersIncludeSelf() []string // get ready peers include self
+	GetReadyKeygen(sessionID string, expectedNodeCount int) bool
+	PutReadyKeygen(nodeID string, sessionID string) error
+	DeleteReadyKeygen(nodeID string, sessionID string) error
 }
 
 type registry struct {
@@ -149,7 +152,13 @@ func (r *registry) logReadyStatus() {
 	for {
 		time.Sleep(5 * time.Second)
 		if !r.ArePeersReady() {
-			logger.Info("Peers are not ready yet", "ready", r.GetReadyPeersCount(), "expected", len(r.peerNodeIDs)+1)
+			logger.Info(
+				"Peers are not ready yet",
+				"ready",
+				r.GetReadyPeersCount(),
+				"expected",
+				len(r.peerNodeIDs)+1,
+			)
 		}
 	}
 }
@@ -203,5 +212,45 @@ func (r *registry) Resign() error {
 		return fmt.Errorf("Delete ready key failed: %w", err)
 	}
 
+	return nil
+}
+
+func (r *registry) GetReadyKeygen(sessionID string, expectedNodeCount int) bool {
+	for {
+		kv, _, err := r.consulKV.Get(fmt.Sprintf("tss/session/%s/ready/", sessionID), nil)
+		if err != nil {
+			return false
+		}
+
+		if kv == nil {
+			return false
+		}
+
+		if len(kv.Value) == expectedNodeCount {
+			return true
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func (r *registry) PutReadyKeygen(nodeID string, sessionID string) error {
+	kv := &api.KVPair{
+		Key:   fmt.Sprintf("tss/session/%s/ready/%s", sessionID, nodeID),
+		Value: []byte("true"),
+	}
+
+	_, err := r.consulKV.Put(kv, nil)
+	if err != nil {
+		return fmt.Errorf("put ready keygen failed: %w", err)
+	}
+	return nil
+}
+
+func (r *registry) DeleteReadyKeygen(nodeID string, sessionID string) error {
+	_, err := r.consulKV.Delete(fmt.Sprintf("tss/session/%s/ready/%s", sessionID, nodeID), nil)
+	if err != nil {
+		return fmt.Errorf("delete ready keygen failed: %w", err)
+	}
 	return nil
 }

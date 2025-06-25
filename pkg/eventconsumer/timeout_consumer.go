@@ -40,10 +40,22 @@ func (tc *timeOutConsumer) Run() {
 			logger.Error("Failed to unmarshal advisory message", err)
 			return
 		}
-		logger.Info("Received advisory message", "stream", advisory.Stream, "stream_seq", advisory.StreamSeq)
+		logger.Info(
+			"Received advisory message",
+			"stream",
+			advisory.Stream,
+			"stream_seq",
+			advisory.StreamSeq,
+		)
 
 		if advisory.Stream == event.SigningPublisherStream {
-			logger.Info("Received max deliveries exceeded advisory", "stream", advisory.Stream, "stream_seq", advisory.StreamSeq)
+			logger.Info(
+				"Received max deliveries exceeded advisory",
+				"stream",
+				advisory.Stream,
+				"stream_seq",
+				advisory.StreamSeq,
+			)
 			js, _ := tc.natsConn.JetStream()
 			failedMsg, err := js.GetMsg(advisory.Stream, advisory.StreamSeq)
 
@@ -63,7 +75,10 @@ func (tc *timeOutConsumer) Run() {
 
 			signErrorResult.ResultType = event.SigningResultTypeError
 			signErrorResult.IsTimeout = true
-			signErrorResult.ErrorReason = fmt.Sprintf("Message delivery exceeded for stream %s", advisory.Stream)
+			signErrorResult.ErrorReason = fmt.Sprintf(
+				"Message delivery exceeded for stream %s",
+				advisory.Stream,
+			)
 
 			signErrorResultBytes, err := json.Marshal(signErrorResult)
 			if err != nil {
@@ -71,9 +86,13 @@ func (tc *timeOutConsumer) Run() {
 				return
 			}
 
-			err = tc.resultQueue.Enqueue(event.SigningResultTopic, signErrorResultBytes, &messaging.EnqueueOptions{
-				IdempotententKey: signErrorResult.TxID,
-			})
+			err = tc.resultQueue.Enqueue(
+				event.SigningResultTopic,
+				signErrorResultBytes,
+				&messaging.EnqueueOptions{
+					IdempotententKey: signErrorResult.TxID,
+				},
+			)
 			if err != nil {
 				logger.Error("Failed to publish signing result event", err)
 				return

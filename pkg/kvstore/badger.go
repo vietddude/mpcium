@@ -3,9 +3,9 @@ package kvstore
 import (
 	"errors"
 
-	"github.com/fystack/mpcium/pkg/logger"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
+	"github.com/fystack/mpcium/pkg/logger"
 )
 
 var (
@@ -24,7 +24,11 @@ func NewBadgerKVStore(dbPath string, encryptionKey []byte) (*BadgerKVStore, erro
 		return nil, ErrEncryptionKeyNotProvided
 	}
 
-	opts := badger.DefaultOptions(dbPath).WithCompression(options.ZSTD).WithEncryptionKey(encryptionKey).WithIndexCacheSize(100 << 20) // 100MB
+	opts := badger.DefaultOptions(dbPath).
+		WithCompression(options.ZSTD).
+		WithEncryptionKey(encryptionKey).
+		WithIndexCacheSize(100 << 20)
+		// 100MB
 	db, err := badger.Open(opts)
 	if err != nil {
 		return nil, err

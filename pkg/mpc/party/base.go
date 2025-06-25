@@ -44,7 +44,13 @@ type party struct {
 	errCh     chan error
 }
 
-func NewParty(walletID string, partyID *tss.PartyID, partyIDs []*tss.PartyID, threshold int, errCh chan error) *party {
+func NewParty(
+	walletID string,
+	partyID *tss.PartyID,
+	partyIDs []*tss.PartyID,
+	threshold int,
+	errCh chan error,
+) *party {
 	inCh := make(chan types.TssMessage, 1000)
 	outCh := make(chan tss.Message, 1000)
 	return &party{walletID, threshold, partyID, partyIDs, inCh, outCh, errCh}

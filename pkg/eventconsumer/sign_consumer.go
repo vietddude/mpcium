@@ -38,7 +38,11 @@ type signingConsumer struct {
 }
 
 // NewSigningConsumer returns a new instance of SigningConsumer.
-func NewSigningConsumer(natsConn *nats.Conn, jsPubsub messaging.StreamPubsub, pubsub messaging.PubSub) SigningConsumer {
+func NewSigningConsumer(
+	natsConn *nats.Conn,
+	jsPubsub messaging.StreamPubsub,
+	pubsub messaging.PubSub,
+) SigningConsumer {
 	return &signingConsumer{
 		natsConn: natsConn,
 		pubsub:   pubsub,

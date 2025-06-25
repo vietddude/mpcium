@@ -179,7 +179,11 @@ func (c *mpcClient) OnResharingResult(callback func(event.ResharingSuccessEvent)
 }
 
 // Generic handler for queue events
-func (c *mpcClient) handleQueueEvent(queue messaging.MessageQueue, topic string, callback interface{}) error {
+func (c *mpcClient) handleQueueEvent(
+	queue messaging.MessageQueue,
+	topic string,
+	callback interface{},
+) error {
 	return queue.Dequeue(topic, func(msg []byte) error {
 		switch cb := callback.(type) {
 		case func(event.KeygenSuccessEvent):
@@ -256,7 +260,11 @@ func loadEncryptedKey(keyPath, password string) ([]byte, error) {
 }
 
 func initSigningStream(natsConn *nats.Conn) messaging.StreamPubsub {
-	stream, err := messaging.NewJetStreamPubSub(natsConn, mpcSigningStream, []string{mpcSigningRequestSubject})
+	stream, err := messaging.NewJetStreamPubSub(
+		natsConn,
+		mpcSigningStream,
+		[]string{mpcSigningRequestSubject},
+	)
 	if err != nil {
 		logger.Fatal("Failed to create JetStream PubSub", err)
 	}

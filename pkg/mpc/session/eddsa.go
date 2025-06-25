@@ -22,7 +22,17 @@ type EDDSASession struct {
 	*session
 }
 
-func NewEDDSASession(walletID string, partyID *tss.PartyID, partyIDs []*tss.PartyID, threshold int, pubSub messaging.PubSub, direct messaging.DirectMessaging, identityStore identity.Store, kvstore kvstore.KVStore, keyinfoStore keyinfo.Store) *EDDSASession {
+func NewEDDSASession(
+	walletID string,
+	partyID *tss.PartyID,
+	partyIDs []*tss.PartyID,
+	threshold int,
+	pubSub messaging.PubSub,
+	direct messaging.DirectMessaging,
+	identityStore identity.Store,
+	kvstore kvstore.KVStore,
+	keyinfoStore keyinfo.Store,
+) *EDDSASession {
 	s := NewSession(PurposeKeygen, walletID, pubSub, direct, identityStore, kvstore, keyinfoStore)
 	s.party = party.NewEDDSAParty(walletID, partyID, partyIDs, threshold, nil, nil, s.errCh)
 	s.topicComposer = &TopicComposer{
@@ -41,15 +51,32 @@ func NewEDDSASession(walletID string, partyID *tss.PartyID, partyIDs []*tss.Part
 	}
 }
 
-func (s *EDDSASession) StartKeygen(ctx context.Context, send func(tss.Message), finish func([]byte)) {
+func (s *EDDSASession) StartKeygen(
+	ctx context.Context,
+	send func(tss.Message),
+	finish func([]byte),
+) {
 	s.party.StartKeygen(ctx, send, finish)
 }
 
-func (s *EDDSASession) StartSigning(ctx context.Context, msg *big.Int, send func(tss.Message), finish func([]byte)) {
+func (s *EDDSASession) StartSigning(
+	ctx context.Context,
+	msg *big.Int,
+	send func(tss.Message),
+	finish func([]byte),
+) {
 	s.party.StartSigning(ctx, msg, send, finish)
 }
 
-func (s *EDDSASession) StartResharing(ctx context.Context, oldPartyIDs []*tss.PartyID, newPartyIDs []*tss.PartyID, oldThreshold int, newThreshold int, send func(tss.Message), finish func([]byte)) {
+func (s *EDDSASession) StartResharing(
+	ctx context.Context,
+	oldPartyIDs []*tss.PartyID,
+	newPartyIDs []*tss.PartyID,
+	oldThreshold int,
+	newThreshold int,
+	send func(tss.Message),
+	finish func([]byte),
+) {
 	s.party.StartResharing(ctx, oldPartyIDs, newPartyIDs, oldThreshold, newThreshold, send, finish)
 }
 
@@ -75,7 +102,10 @@ func (s *EDDSASession) GetPublicKey(data []byte) ([]byte, error) {
 	return pubKeyBytes, nil
 }
 
-func (s *EDDSASession) VerifySignature(msg []byte, signature []byte) (*common.SignatureData, error) {
+func (s *EDDSASession) VerifySignature(
+	msg []byte,
+	signature []byte,
+) (*common.SignatureData, error) {
 	signatureData := &common.SignatureData{}
 	err := json.Unmarshal(signature, signatureData)
 	if err != nil {
