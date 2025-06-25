@@ -1,6 +1,11 @@
 package eventconsumer
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/nats-io/nats.go"
+)
 
 type KeyType string
 
@@ -8,6 +13,13 @@ const (
 	KeyTypeSecp256k1 KeyType = "secp256k1"
 	KeyTypeEd25519   KeyType = "ed25519"
 )
+
+type keygenRequest struct {
+	msg        *nats.Msg
+	retryCount int
+	timestamp  time.Time
+	order      int64 // Global order counter
+}
 
 // InitiatorMessage is anything that carries a payload to verify and its signature.
 type InitiatorMessage interface {

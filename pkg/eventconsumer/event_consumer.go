@@ -11,10 +11,10 @@ import (
 
 	"github.com/fystack/mpcium/pkg/event"
 	"github.com/fystack/mpcium/pkg/identity"
+	"github.com/fystack/mpcium/pkg/limiter"
 	"github.com/fystack/mpcium/pkg/logger"
 	"github.com/fystack/mpcium/pkg/messaging"
 	"github.com/fystack/mpcium/pkg/mpc/node"
-	"github.com/fystack/mpcium/pkg/mpc/session"
 	"github.com/fystack/mpcium/pkg/types"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/viper"
@@ -54,6 +54,10 @@ type eventConsumer struct {
 	cleanupInterval time.Duration // How often to run cleanup
 	sessionTimeout  time.Duration // How long before a session is considered stale
 	cleanupStopChan chan struct{} // Signal to stop cleanup goroutine
+
+	// Queue and worker pool for keygen operations
+	keygenLimiter     *limiter.Limiter[keygenRequest]
+	stopKeygenWorkers func()
 }
 
 func NewEventConsumer(
@@ -76,10 +80,14 @@ func NewEventConsumer(
 		cleanupStopChan:      make(chan struct{}),
 		mpcThreshold:         viper.GetInt("mpc_threshold"),
 		identityStore:        identityStore,
+		keygenLimiter:        limiter.NewLimiter[keygenRequest](100, 2, 3),
 	}
 
 	// Start background cleanup goroutine
 	go ec.sessionCleanupRoutine()
+
+	// Start keygen worker pool
+	ec.stopKeygenWorkers = ec.keygenLimiter.StartWorkers(ec.keygenWorkerFunc)
 
 	return ec
 }
@@ -101,109 +109,6 @@ func (ec *eventConsumer) Run() {
 	}
 
 	logger.Info("MPC Event consumer started...!")
-}
-func (ec *eventConsumer) consumeKeyGenerationEvent() error {
-	sub, err := ec.pubsub.Subscribe(MPCGenerateEvent, func(natMsg *nats.Msg) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		if err := ec.handleKeyGenerationEvent(ctx, natMsg.Data); err != nil {
-			logger.Error("Failed to handle key generation event", err)
-		}
-	})
-
-	if err != nil {
-		return err
-	}
-
-	ec.keyGenerationSub = sub
-	return nil
-}
-
-func (ec *eventConsumer) handleKeyGenerationEvent(ctx context.Context, raw []byte) error {
-	var msg types.GenerateKeyMessage
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		return fmt.Errorf("unmarshal message: %w", err)
-	}
-	logger.Info("Received key generation event", "msg", msg)
-
-	if err := ec.identityStore.VerifyInitiatorMessage(&msg); err != nil {
-		return fmt.Errorf("verify initiator: %w", err)
-	}
-
-	walletID := msg.WalletID
-	successEvent := &event.KeygenSuccessEvent{WalletID: walletID}
-	var wg sync.WaitGroup
-
-	// Start ECDSA and EDDSA sessions
-	for _, keyType := range []types.KeyType{types.KeyTypeSecp256k1, types.KeyTypeEd25519} {
-		kgSession, err := ec.node.CreateKeygenSession(keyType, walletID, ec.mpcThreshold, ec.genKeySucecssQueue)
-		if err != nil {
-			return fmt.Errorf("create %v session: %w", keyType, err)
-		}
-
-		defer kgSession.Close()
-
-		kgSession.Listen()
-		err = kgSession.WaitReady(ctx)
-		if err != nil {
-			return fmt.Errorf("wait for session ready: %w", err)
-		}
-		wg.Add(1)
-
-		go func(s session.Session, kt types.KeyType) {
-			defer wg.Done()
-
-			s.StartKeygen(ctx, s.Send, func(data []byte) {
-				err := s.SaveKey(ec.node.GetReadyPeersIncludeSelf(), ec.mpcThreshold, DefaultVersion, data)
-				if err != nil {
-					logger.Error("Failed to save key", err)
-				}
-				logger.Info("Saved key", "type", kt, "walletID", walletID, "threshold", ec.mpcThreshold, "version", DefaultVersion, "data", len(data))
-				if pubKey, err := s.GetPublicKey(data); err == nil {
-					switch kt {
-					case types.KeyTypeSecp256k1:
-						successEvent.ECDSAPubKey = pubKey
-					case types.KeyTypeEd25519:
-						successEvent.EDDSAPubKey = pubKey
-					}
-				}
-			})
-
-			if err != nil {
-				logger.Error("Keygen failed", err, "keyType", kt)
-			}
-		}(kgSession, keyType)
-	}
-
-	doneCh := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(doneCh)
-	}()
-
-	select {
-	case <-ctx.Done():
-		logger.Warn("Keygen timed out", "walletID", walletID)
-		return ctx.Err()
-	case <-doneCh:
-		// All keygens done
-	}
-
-	successBytes, err := json.Marshal(successEvent)
-	if err != nil {
-		return fmt.Errorf("marshal keygen error: %w", err)
-	}
-
-	err = ec.genKeySucecssQueue.Enqueue(event.KeygenSuccessEventTopic, successBytes, &messaging.EnqueueOptions{
-		IdempotententKey: fmt.Sprintf(event.TypeGenerateWalletSuccess, walletID),
-	})
-	if err != nil {
-		return fmt.Errorf("enqueue keygen error: %w", err)
-	}
-
-	logger.Info("[COMPLETED KEY GEN] Key generation completed successfully", "walletID", walletID)
-	return nil
 }
 
 func (ec *eventConsumer) consumeTxSigningEvent() error {
@@ -294,16 +199,32 @@ func (ec *eventConsumer) consumeTxSigningEvent() error {
 					return
 				}
 
-				err = ec.signingResultQueue.Enqueue(event.SigningResultCompleteTopic, signingResultBytes, &messaging.EnqueueOptions{
-					IdempotententKey: fmt.Sprintf(event.TypeSigningResultComplete, msg.WalletID, msg.TxID),
-				})
+				err = ec.signingResultQueue.Enqueue(
+					event.SigningResultCompleteTopic,
+					signingResultBytes,
+					&messaging.EnqueueOptions{
+						IdempotententKey: fmt.Sprintf(
+							event.TypeSigningResultComplete,
+							msg.WalletID,
+							msg.TxID,
+						),
+					},
+				)
 				if err != nil {
 					logger.Error("Failed to publish signing result event", err)
 					ec.removeSession(msg.WalletID, msg.TxID)
 					return
 				}
 
-				logger.Info("Signing completed", "walletID", msg.WalletID, "txID", msg.TxID, "data", len(data))
+				logger.Info(
+					"Signing completed",
+					"walletID",
+					msg.WalletID,
+					"txID",
+					msg.TxID,
+					"data",
+					len(data),
+				)
 				ec.removeSession(msg.WalletID, msg.TxID)
 			})
 		}()
@@ -365,12 +286,26 @@ func (ec *eventConsumer) handleReshareEvent(ctx context.Context, raw []byte) err
 
 	keyInfoVersion, _ := ec.node.GetKeyInfoVersion(msg.KeyType, msg.WalletID)
 
-	oldSession, err := ec.node.CreateResharingSession(true, msg.KeyType, msg.WalletID, ec.mpcThreshold, keyInfoVersion, ec.resharingResultQueue)
+	oldSession, err := ec.node.CreateResharingSession(
+		true,
+		msg.KeyType,
+		msg.WalletID,
+		ec.mpcThreshold,
+		keyInfoVersion,
+		ec.resharingResultQueue,
+	)
 	if err != nil {
 		return fmt.Errorf("create old session: %w", err)
 	}
 
-	newSession, err := ec.node.CreateResharingSession(false, msg.KeyType, msg.WalletID, msg.NewThreshold, keyInfoVersion, ec.resharingResultQueue)
+	newSession, err := ec.node.CreateResharingSession(
+		false,
+		msg.KeyType,
+		msg.WalletID,
+		msg.NewThreshold,
+		keyInfoVersion,
+		ec.resharingResultQueue,
+	)
 	if err != nil {
 		return fmt.Errorf("create new session: %w", err)
 	}
@@ -429,7 +364,12 @@ func (ec *eventConsumer) handleReshareEvent(ctx context.Context, raw []byte) err
 			newSession.Send,
 			func(data []byte) {
 				if pubKey, err := newSession.GetPublicKey(data); err == nil {
-					newSession.SaveKey(ec.node.GetReadyPeersIncludeSelf(), msg.NewThreshold, keyInfoVersion+1, data)
+					newSession.SaveKey(
+						ec.node.GetReadyPeersIncludeSelf(),
+						msg.NewThreshold,
+						keyInfoVersion+1,
+						data,
+					)
 					if msg.KeyType == types.KeyTypeSecp256k1 {
 						successEvent.ECDSAPubKey = pubKey
 					} else {
@@ -454,7 +394,11 @@ func (ec *eventConsumer) handleReshareEvent(ctx context.Context, raw []byte) err
 		event.ResharingSuccessEventTopic,
 		eventBytes,
 		&messaging.EnqueueOptions{
-			IdempotententKey: fmt.Sprintf(event.TypeResharingSuccess, msg.WalletID, keyInfoVersion+1),
+			IdempotententKey: fmt.Sprintf(
+				event.TypeResharingSuccess,
+				msg.WalletID,
+				keyInfoVersion+1,
+			),
 		},
 	)
 	if err != nil {
@@ -465,7 +409,12 @@ func (ec *eventConsumer) handleReshareEvent(ctx context.Context, raw []byte) err
 	return nil
 }
 
-func (ec *eventConsumer) handleSigningSessionError(walletID, txID, NetworkInternalCode string, err error, errMsg string, natMsg *nats.Msg) {
+func (ec *eventConsumer) handleSigningSessionError(
+	walletID, txID, NetworkInternalCode string,
+	err error,
+	errMsg string,
+	natMsg *nats.Msg,
+) {
 	logger.Error("signing session error", err, "walletID", walletID, "txID", txID, "error", errMsg)
 	signingResult := event.SigningResultEvent{
 		ResultType:          event.SigningResultTypeError,
@@ -482,9 +431,13 @@ func (ec *eventConsumer) handleSigningSessionError(walletID, txID, NetworkIntern
 	}
 
 	natMsg.Ack()
-	err = ec.signingResultQueue.Enqueue(event.SigningResultCompleteTopic, signingResultBytes, &messaging.EnqueueOptions{
-		IdempotententKey: txID,
-	})
+	err = ec.signingResultQueue.Enqueue(
+		event.SigningResultCompleteTopic,
+		signingResultBytes,
+		&messaging.EnqueueOptions{
+			IdempotententKey: txID,
+		},
+	)
 	if err != nil {
 		logger.Error("Failed to publish signing result event", err)
 		return
@@ -514,7 +467,13 @@ func (ec *eventConsumer) cleanupStaleSessions() {
 
 	for sessionID, creationTime := range ec.activeSessions {
 		if now.Sub(creationTime) > ec.sessionTimeout {
-			logger.Info("Cleaning up stale session", "sessionID", sessionID, "age", now.Sub(creationTime))
+			logger.Info(
+				"Cleaning up stale session",
+				"sessionID",
+				sessionID,
+				"age",
+				now.Sub(creationTime),
+			)
 			delete(ec.activeSessions, sessionID)
 		}
 	}
@@ -559,6 +518,9 @@ func (ec *eventConsumer) Close() error {
 	// Signal cleanup routine to stop
 	close(ec.cleanupStopChan)
 
+	// Signal keygen worker pool to stop
+	ec.stopKeygenWorkers()
+
 	err := ec.keyGenerationSub.Unsubscribe()
 	if err != nil {
 		return err
@@ -569,4 +531,75 @@ func (ec *eventConsumer) Close() error {
 	}
 
 	return nil
+}
+
+func (ec *eventConsumer) keygenWorkerFunc(workerID int, req keygenRequest) {
+	logger.Info("Keygen worker processing message",
+		"workerID", workerID,
+		"order", req.order,
+		"retryCount", req.retryCount)
+	var msg types.GenerateKeyMessage
+	if err := json.Unmarshal(req.msg.Data, &msg); err != nil {
+		logger.Error("Failed to unmarshal keygen message", err)
+		req.msg.Nak()
+		return
+	}
+	logger.Info("Received key generation event", "msg", msg)
+
+	if err := ec.identityStore.VerifyInitiatorMessage(&msg); err != nil {
+		logger.Error("Failed to verify initiator message", err)
+		req.msg.Nak()
+		return
+	}
+
+	walletID := msg.WalletID
+	ec.node.GetPeerRegistry().PutReadyKeygen(ec.node.ID(), walletID)
+	if ec.node.GetPeerRegistry().GetReadyKeygen(string(req.msg.Data), ec.mpcThreshold+1) {
+		// Delete signal in the consul KV
+		ec.node.GetPeerRegistry().DeleteReadyKeygen(ec.node.ID(), walletID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := ec.handleKeyGenerationEvent(ctx, walletID); err != nil {
+		logger.Error("Failed to handle key generation event", err,
+			"workerID", workerID,
+			"order", req.order,
+			"retryCount", req.retryCount)
+
+		if req.retryCount < ec.keygenLimiter.MaxRetries {
+			req.retryCount++
+			logger.Info("Retrying keygen request",
+				"order", req.order,
+				"retryCount", req.retryCount,
+				"maxRetries", ec.keygenLimiter.MaxRetries)
+
+			newOrder := ec.keygenLimiter.GetNextOrder()
+			retryReq := &keygenRequest{
+				msg:        req.msg,
+				retryCount: req.retryCount,
+				timestamp:  time.Now(),
+				order:      newOrder,
+			}
+
+			if !ec.keygenLimiter.Enqueue(*retryReq) {
+				logger.Warn("Keygen queue full, cannot retry",
+					"order", req.order,
+					"retryCount", req.retryCount)
+				req.msg.Nak() // Let NATS handle retry
+			}
+		} else {
+			logger.Error("Keygen request failed after max retries", nil,
+				"order", req.order,
+				"retryCount", req.retryCount,
+				"maxRetries", ec.keygenLimiter.MaxRetries)
+			req.msg.Nak() // Let NATS handle retry or move to dead letter queue
+		}
+	} else {
+		logger.Info("Keygen request completed successfully",
+			"workerID", workerID,
+			"order", req.order,
+			"retryCount", req.retryCount)
+	}
 }
