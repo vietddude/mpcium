@@ -91,7 +91,7 @@ func NewEDDSAReshareSession(
 
 	var oldPeerIDs []string
 	for _, partyId := range oldPartyIDs {
-		oldPeerIDs = append(oldPeerIDs, partyIDToNodeID(partyId))
+		oldPeerIDs = append(oldPeerIDs, PartyIDToNodeID(partyId))
 	}
 
 	return &eddsaReshareSession{

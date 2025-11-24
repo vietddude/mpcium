@@ -35,7 +35,40 @@ func (n *Node) generatePartyIDs(
 	return
 }
 
-// createPartyID creates a new party ID for the given node ID, label and version
+// GeneratePartyIDsWithSelfLast behaves like GeneratePartyIDs but moves the
+// node's own party ID to the end of the sorted slice. Keep persistence index for self mobile party.
+func GeneratePartyIDsWithSelfLast(
+	nodeID string,
+	label string,
+	readyPeerIDs []string,
+	version int,
+) (self *tss.PartyID, all []*tss.PartyID) {
+	partyIDs := make([]*tss.PartyID, 0, len(readyPeerIDs))
+	var selfParty *tss.PartyID
+
+	// Create PartyID for all peers
+	for _, peerID := range readyPeerIDs {
+		partyID := createPartyID(peerID, label, version)
+		if peerID == nodeID {
+			selfParty = partyID
+		} else {
+			partyIDs = append(partyIDs, partyID)
+		}
+	}
+
+	// Sort all PartyID except self
+	partyIDs = tss.SortPartyIDs(partyIDs, 0)
+
+	// Append self to the end of the slice
+	if selfParty != nil {
+		selfParty.Index = len(partyIDs)
+		partyIDs = append(partyIDs, selfParty)
+	}
+
+	return selfParty, partyIDs
+}
+
+// / createPartyID creates a new party ID for the given node ID, label and version
 // It returns the party ID: random string
 // Moniker: for routing messages
 // Key: for mpc internal use (need persistent storage)
@@ -45,12 +78,13 @@ func createPartyID(nodeID string, label string, version int) *tss.PartyID {
 	if version == BackwardCompatibleVersion {
 		key = new(big.Int).SetBytes([]byte(nodeID))
 	} else {
-		key = new(big.Int).SetBytes([]byte(fmt.Sprintf("%s:%d", nodeID, version)))
+		keyBytes := fmt.Appendf(nil, "%s:%d", nodeID, version)
+		key = new(big.Int).SetBytes(keyBytes)
 	}
 	return tss.NewPartyID(partyID, label, key)
 }
 
-func partyIDToNodeID(partyID *tss.PartyID) string {
+func PartyIDToNodeID(partyID *tss.PartyID) string {
 	if partyID == nil {
 		return ""
 	}
@@ -58,14 +92,14 @@ func partyIDToNodeID(partyID *tss.PartyID) string {
 	return strings.TrimSpace(nodeID)
 }
 
-func partyIDsToNodeIDs(pids []*tss.PartyID) []string {
+func PartyIDsToNodeIDs(pids []*tss.PartyID) []string {
 	out := make([]string, 0, len(pids))
 	for _, p := range pids {
-		out = append(out, partyIDToNodeID(p))
+		out = append(out, PartyIDToNodeID(p))
 	}
 	return out
 }
 
-func comparePartyIDs(x, y *tss.PartyID) bool {
+func ComparePartyIDs(x, y *tss.PartyID) bool {
 	return bytes.Equal(x.KeyInt().Bytes(), y.KeyInt().Bytes())
 }
