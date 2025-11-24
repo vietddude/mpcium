@@ -145,9 +145,9 @@ func (s *session) handleTssMessage(keyshare tss.Message) {
 			return
 		}
 
-		selfID := partyIDToNodeID(s.selfPartyID)
+		selfID := PartyIDToNodeID(s.selfPartyID)
 		for _, to := range routing.To {
-			toNodeID := partyIDToNodeID(to)
+			toNodeID := PartyIDToNodeID(to)
 			topic := s.topicComposer.ComposeDirectTopic(selfID, toNodeID)
 			if selfID == toNodeID {
 				err := s.direct.SendToSelf(topic, msg)
@@ -181,7 +181,7 @@ func (s *session) receiveP2PTssMessage(topic string, cipher []byte) {
 	var plaintext []byte
 	var err error
 
-	if senderID == partyIDToNodeID(s.selfPartyID) {
+	if senderID == PartyIDToNodeID(s.selfPartyID) {
 		plaintext = cipher // to self, no decryption needed
 	} else {
 		plaintext, err = s.identityStore.DecryptMessage(cipher, senderID)
@@ -244,7 +244,7 @@ func (s *session) receiveTssMessage(msg *types.TssMessage) {
 	isBroadcast := msg.IsBroadcast && len(msg.To) == 0
 	var isToSelf bool
 	for _, to := range msg.To {
-		if comparePartyIDs(to, s.selfPartyID) {
+		if ComparePartyIDs(to, s.selfPartyID) {
 			isToSelf = true
 			break
 		}
@@ -275,7 +275,7 @@ func (s *session) subscribeDirectTopicAsync(topic string) error {
 }
 
 func (s *session) subscribeFromPeersAsync(fromIDs []string) {
-	toID := partyIDToNodeID(s.selfPartyID)
+	toID := PartyIDToNodeID(s.selfPartyID)
 	for _, fromID := range fromIDs {
 		topic := s.topicComposer.ComposeDirectTopic(fromID, toID)
 		if err := s.subscribeDirectTopicAsync(topic); err != nil {
@@ -303,7 +303,7 @@ func (s *session) ListenToIncomingMessageAsync() {
 	s.subscribeBroadcastAsync()
 
 	// 2) direct from peers in this session's partyIDs (includes self)
-	s.subscribeFromPeersAsync(partyIDsToNodeIDs(s.partyIDs))
+	s.subscribeFromPeersAsync(PartyIDsToNodeIDs(s.partyIDs))
 }
 
 func (s *session) ListenToPeersAsync(peerIDs []string) {
