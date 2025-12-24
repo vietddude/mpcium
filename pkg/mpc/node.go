@@ -83,6 +83,7 @@ func (p *Node) CreateKeyGenSession(
 	walletID string,
 	threshold int,
 	resultQueue messaging.MessageQueue,
+	selectedNodeIDs []string,
 ) (KeyGenSession, error) {
 	if !p.peerRegistry.ArePeersReady() {
 		return nil, errors.New("All nodes are not ready!")
@@ -93,24 +94,43 @@ func (p *Node) CreateKeyGenSession(
 		return nil, fmt.Errorf("Key already exists: %s", walletID)
 	}
 
+	var nodeIDs []string
+	if len(selectedNodeIDs) > 0 {
+		// Use selected node IDs, but filter to only include ready peers
+		readyPeerIDs := p.peerRegistry.GetReadyPeersIncludeSelf()
+		nodeIDs = p.filterReadyPeers(selectedNodeIDs, readyPeerIDs)
+		
+		// Validate that we have enough ready nodes
+		if len(nodeIDs) < threshold+1 {
+			return nil, fmt.Errorf("not enough ready nodes in selected list: expected at least %d, got %d", threshold+1, len(nodeIDs))
+		}
+		
+		// Validate that self is in the selected list - return special error to skip, same as sign
+		if !slices.Contains(nodeIDs, p.nodeID) {
+			return nil, ErrNotInParticipantList
+		}
+	} else {
+		// Use all ready peers if no selection provided
+		nodeIDs = p.peerRegistry.GetReadyPeersIncludeSelf()
+	}
+
 	switch sessionType {
 	case SessionTypeECDSA:
-		return p.createECDSAKeyGenSession(walletID, threshold, DefaultVersion, resultQueue)
+		return p.createECDSAKeyGenSession(walletID, threshold, DefaultVersion, resultQueue, nodeIDs)
 	case SessionTypeEDDSA:
-		return p.createEDDSAKeyGenSession(walletID, threshold, DefaultVersion, resultQueue)
+		return p.createEDDSAKeyGenSession(walletID, threshold, DefaultVersion, resultQueue, nodeIDs)
 	default:
 		return nil, fmt.Errorf("Unknown session type: %s", sessionType)
 	}
 }
 
-func (p *Node) createECDSAKeyGenSession(walletID string, threshold int, version int, resultQueue messaging.MessageQueue) (KeyGenSession, error) {
-	readyPeerIDs := p.peerRegistry.GetReadyPeersIncludeSelf()
-	selfPartyID, allPartyIDs := p.generatePartyIDs(PurposeKeygen, readyPeerIDs, version)
+func (p *Node) createECDSAKeyGenSession(walletID string, threshold int, version int, resultQueue messaging.MessageQueue, nodeIDs []string) (KeyGenSession, error) {
+	selfPartyID, allPartyIDs := p.generatePartyIDs(PurposeKeygen, nodeIDs, version)
 	session := newECDSAKeygenSession(
 		walletID,
 		p.pubSub,
 		p.direct,
-		readyPeerIDs,
+		nodeIDs,
 		selfPartyID,
 		allPartyIDs,
 		threshold,
@@ -123,14 +143,13 @@ func (p *Node) createECDSAKeyGenSession(walletID string, threshold int, version 
 	return session, nil
 }
 
-func (p *Node) createEDDSAKeyGenSession(walletID string, threshold int, version int, resultQueue messaging.MessageQueue) (KeyGenSession, error) {
-	readyPeerIDs := p.peerRegistry.GetReadyPeersIncludeSelf()
-	selfPartyID, allPartyIDs := p.generatePartyIDs(PurposeKeygen, readyPeerIDs, version)
+func (p *Node) createEDDSAKeyGenSession(walletID string, threshold int, version int, resultQueue messaging.MessageQueue, nodeIDs []string) (KeyGenSession, error) {
+	selfPartyID, allPartyIDs := p.generatePartyIDs(PurposeKeygen, nodeIDs, version)
 	session := newEDDSAKeygenSession(
 		walletID,
 		p.pubSub,
 		p.direct,
-		readyPeerIDs,
+		nodeIDs,
 		selfPartyID,
 		allPartyIDs,
 		threshold,
@@ -248,6 +267,17 @@ func (p *Node) getReadyPeersForSession(keyInfo *keyinfo.KeyInfo, readyPeers []st
 	}
 
 	return readyParticipantIDs
+}
+
+func (p *Node) filterReadyPeers(selectedNodeIDs []string, readyPeers []string) []string {
+	// Filter selected node IDs to only include ready peers
+	filtered := make([]string, 0, len(selectedNodeIDs))
+	for _, nodeID := range selectedNodeIDs {
+		if slices.Contains(readyPeers, nodeID) {
+			filtered = append(filtered, nodeID)
+		}
+	}
+	return filtered
 }
 
 func (p *Node) ensureNodeIsParticipant(keyInfo *keyinfo.KeyInfo) error {

@@ -1,9 +1,10 @@
 package event
 
 const (
-	KeygenBrokerStream   = "mpc-keygen"
-	KeygenConsumerStream = "mpc-keygen-consumer"
-	KeygenRequestTopic   = "mpc.keygen_request.*"
+	KeygenBrokerStream    = "mpc-keygen"
+	KeygenConsumerStream  = "mpc-keygen-consumer"
+	KeygenRequestTopic    = "mpc.keygen_request.*"
+	KeygenRequestTopicFmt = "mpc.keygen_request.%s"
 )
 
 type KeygenResultEvent struct {
