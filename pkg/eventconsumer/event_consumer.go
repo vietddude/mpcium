@@ -173,12 +173,18 @@ func (ec *eventConsumer) handleKeyGenEvent(natMsg *nats.Msg) {
 	}
 
 	walletID := msg.WalletID
-	ecdsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeECDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue)
+	var nodeIDs []string
+	if len(msg.SelectedNodeIDs) > 0 {
+		nodeIDs = msg.SelectedNodeIDs
+		logger.Info("Using selected node IDs for keygen", "walletID", walletID, "nodeIDs", nodeIDs)
+	}
+
+	ecdsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeECDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue, nodeIDs)
 	if err != nil {
 		ec.handleKeygenSessionError(walletID, err, "Failed to create ECDSA key generation session", natMsg)
 		return
 	}
-	eddsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeEDDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue)
+	eddsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeEDDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue, nodeIDs)
 	if err != nil {
 		ec.handleKeygenSessionError(walletID, err, "Failed to create EdDSA key generation session", natMsg)
 		return

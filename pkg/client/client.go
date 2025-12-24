@@ -21,6 +21,7 @@ const (
 type MPCClient interface {
 	CreateWallet(walletID string) error
 	CreateWalletWithAuthorizers(walletID string, authorizerSignatures []types.AuthorizerSignature) error
+	CreateWalletWithSelectedNodes(walletID string, nodes []string) error
 	OnWalletCreationResult(callback func(event event.KeygenResultEvent)) error
 
 	SignTransaction(msg *types.SignTxMessage) error
@@ -105,14 +106,19 @@ func NewMPCClient(opts Options) MPCClient {
 
 // CreateWallet generates a GenerateKeyMessage, signs it, and publishes it.
 func (c *mpcClient) CreateWallet(walletID string) error {
-	return c.CreateWalletWithAuthorizers(walletID, nil)
+	return c.createWalletWithAuthorizers(walletID, nil, nil)
+}
+
+func (c *mpcClient) CreateWalletWithAuthorizers(walletID string, authorizerSignatures []types.AuthorizerSignature) error {
+	return c.createWalletWithAuthorizers(walletID, nil, authorizerSignatures)
 }
 
 // CreateWalletWithAuthorizers generates a GenerateKeyMessage with authorizer signatures, signs it, and publishes it.
-func (c *mpcClient) CreateWalletWithAuthorizers(walletID string, authorizerSignatures []types.AuthorizerSignature) error {
+func (c *mpcClient) createWalletWithAuthorizers(walletID string, selectedNodeIDs []string, authorizerSignatures []types.AuthorizerSignature) error {
 	// build the message
 	msg := &types.GenerateKeyMessage{
 		WalletID:             walletID,
+		SelectedNodeIDs:      selectedNodeIDs,
 		AuthorizerSignatures: authorizerSignatures,
 	}
 	// compute the canonical raw bytes
@@ -135,6 +141,10 @@ func (c *mpcClient) CreateWalletWithAuthorizers(walletID string, authorizerSigna
 		return fmt.Errorf("CreateWallet: publish error: %w", err)
 	}
 	return nil
+}
+
+func (c *mpcClient) CreateWalletWithSelectedNodes(walletID string, nodes []string) error {
+	return c.createWalletWithAuthorizers(walletID, nodes, nil)
 }
 
 // The callback will be invoked whenever a wallet creation result is received.
