@@ -36,6 +36,7 @@ type InitiatorMessage interface {
 
 type GenerateKeyMessage struct {
 	WalletID             string                `json:"wallet_id"`
+	SelectedNodeIDs      []string              `json:"selected_node_ids"`
 	Signature            []byte                `json:"signature"`
 	AuthorizerSignatures []AuthorizerSignature `json:"authorizer_signatures,omitempty"`
 }

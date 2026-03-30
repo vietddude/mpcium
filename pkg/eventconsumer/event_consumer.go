@@ -157,23 +157,18 @@ func (ec *eventConsumer) handleKeyGenEvent(natMsg *nats.Msg) {
 	}
 
 	walletID := msg.WalletID
-
-	// Guard against duplicate keygen sessions for the same walletID.
-	// Under heavy load, the keygen consumer may NAK and JetStream redelivers,
-	// creating a second session on the same NATS topics which causes VSS verify failures.
-	if !ec.tryAddSession(walletID, "keygen") {
-		duplicateErr := fmt.Errorf("duplicate keygen request detected for walletID=%s", walletID)
-		ec.handleKeygenSessionError(walletID, duplicateErr, "Duplicate keygen session", natMsg)
-		return
+	var nodeIDs []string
+	if len(msg.SelectedNodeIDs) > 0 {
+		nodeIDs = msg.SelectedNodeIDs
+		logger.Info("Using selected node IDs for keygen", "walletID", walletID, "nodeIDs", nodeIDs)
 	}
-	defer ec.removeSession(walletID, "keygen")
 
-	ecdsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeECDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue)
+	ecdsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeECDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue, nodeIDs)
 	if err != nil {
 		ec.handleKeygenSessionError(walletID, err, "Failed to create ECDSA key generation session", natMsg)
 		return
 	}
-	eddsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeEDDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue)
+	eddsaSession, err := ec.node.CreateKeyGenSession(mpc.SessionTypeEDDSA, walletID, ec.mpcThreshold, ec.genKeyResultQueue, nodeIDs)
 	if err != nil {
 		ec.handleKeygenSessionError(walletID, err, "Failed to create EdDSA key generation session", natMsg)
 		return
