@@ -1,0 +1,33 @@
+{
+  "nats_url": "nats://127.0.0.1:4222",
+  "client_id": "sdkflow-example",
+  "timeout": "60s",
+  "keygen": {
+    "session": {
+      "session_id": "keygen-session-001",
+      "wallet_id": "wallet-001",
+      "protocol": "ecdsa",
+      "threshold": 1,
+      "participants": [
+        {
+          "id": "node0",
+          "moniker": "node0",
+          "unique_key_hex": "6e6f646530",
+          "identity_public_key_hex": "REPLACE_WITH_NODE0_SDK_IDENTITY_PUBKEY_HEX"
+        },
+        {
+          "id": "node1",
+          "moniker": "node1",
+          "unique_key_hex": "6e6f646531",
+          "identity_public_key_hex": "REPLACE_WITH_NODE1_SDK_IDENTITY_PUBKEY_HEX"
+        },
+        {
+          "id": "node2",
+          "moniker": "node2",
+          "unique_key_hex": "6e6f646532",
+          "identity_public_key_hex": "REPLACE_WITH_NODE2_SDK_IDENTITY_PUBKEY_HEX"
+        }
+      ]
+    }
+  }
+}
