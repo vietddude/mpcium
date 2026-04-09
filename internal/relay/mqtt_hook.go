@@ -207,7 +207,7 @@ func (h *relayHook) OnDisconnect(cl *mqtt.Client, err error, _ bool) {
 	}
 }
 
-func (h *relayHook) publishPresenceEvent(ctx context.Context, event PresenceEvent) error {
+func (h *relayHook) publishPresenceEvent(_ context.Context, event PresenceEvent) error {
 	if !h.presenceEventsEnabled {
 		return nil
 	}
