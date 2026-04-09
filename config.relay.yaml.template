@@ -1,0 +1,28 @@
+environment: development
+presence_events_enabled: true
+
+mqtt:
+  address: 0.0.0.0:1883
+  listener_id: relay-mqtt
+
+nats:
+  url: nats://127.0.0.1:4222
+  # username: nats_user
+  # password: nats_password
+  # tls:
+  #   client_cert: /path/to/client.crt
+  #   client_key: /path/to/client.key
+  #   ca_cert: /path/to/ca.crt
+
+redis:
+  addr: 127.0.0.1:6379
+  password: ""
+  db: 0
+  online_ttl: 30s
+  key_prefix: cosigner
+
+auth:
+  cosigners:
+    - cosigner_id: cosigner-server-1
+      username: cosigner1
+      password: change-me
