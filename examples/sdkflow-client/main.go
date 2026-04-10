@@ -33,12 +33,14 @@ func main() {
 	if err != nil {
 		exitf("load config: %v", err)
 	}
+	fmt.Printf("loaded config path=%s nats_url=%s client_id=%s timeout=%s\n", *configPath, cfg.NATSURL, cfg.ClientID, cfg.Timeout)
 
 	nc, err := nats.Connect(cfg.NATSURL)
 	if err != nil {
 		exitf("connect nats: %v", err)
 	}
 	defer nc.Close()
+	fmt.Printf("connected to nats url=%s\n", cfg.NATSURL)
 
 	client := sdkflow.NewClient(sdkflow.ClientOptions{
 		NatsConn: nc,
@@ -69,19 +71,19 @@ func runKeygen(client sdkflow.Client, req *sdkflow.KeygenRequest, timeout time.D
 	if strings.TrimSpace(req.Session.SessionID) == "" {
 		req.Session.SessionID = uuid.NewString()
 	}
-	if strings.TrimSpace(req.Session.KeyID) == "" {
-		req.Session.KeyID = req.Session.WalletID
-	}
-	req.Session.Operation = "keygen"
+	req.Session.Operation = sdkflow.OperationKeygen
+	logSession("keygen", req.Session)
 
 	wait := make(chan sdkflow.KeygenResult, 1)
 	if err := client.OnKeygenResult(func(result sdkflow.KeygenResult) {
 		if result.SessionID == req.Session.SessionID {
+			fmt.Printf("received keygen callback session_id=%s result_type=%s\n", result.SessionID, result.ResultType)
 			wait <- result
 		}
 	}); err != nil {
 		exitf("subscribe keygen result: %v", err)
 	}
+	fmt.Printf("subscribed keygen result session_id=%s client_id listener ready\n", req.Session.SessionID)
 
 	if err := client.CreateKeygen(*req); err != nil {
 		exitf("create keygen: %v", err)
@@ -100,19 +102,20 @@ func runSign(client sdkflow.Client, req *sdkflow.SignRequest, timeout time.Durat
 	if strings.TrimSpace(req.Session.SessionID) == "" {
 		req.Session.SessionID = uuid.NewString()
 	}
-	if strings.TrimSpace(req.Session.KeyID) == "" {
-		req.Session.KeyID = req.Session.WalletID
-	}
-	req.Session.Operation = "sign"
+	req.Session.Operation = sdkflow.OperationSign
+	logSession("sign", req.Session)
+	fmt.Printf("signer_indexes=%v message_digest_len=%d\n", req.SignerIndexes, len(req.MessageDigestHex))
 
 	wait := make(chan sdkflow.SignResult, 1)
 	if err := client.OnSignResult(func(result sdkflow.SignResult) {
 		if result.SessionID == req.Session.SessionID {
+			fmt.Printf("received sign callback session_id=%s result_type=%s\n", result.SessionID, result.ResultType)
 			wait <- result
 		}
 	}); err != nil {
 		exitf("subscribe sign result: %v", err)
 	}
+	fmt.Printf("subscribed sign result session_id=%s client_id listener ready\n", req.Session.SessionID)
 
 	if err := client.Sign(*req); err != nil {
 		exitf("sign: %v", err)
@@ -151,6 +154,27 @@ func printJSON(value any) {
 		exitf("marshal result: %v", err)
 	}
 	fmt.Println(string(blob))
+}
+
+func logSession(kind string, session sdkflow.SessionContext) {
+	fmt.Printf(
+		"preparing %s session_id=%s wallet_id=%s protocol=%s threshold=%d participants=%d\n",
+		kind,
+		session.SessionID,
+		session.WalletID,
+		session.Protocol,
+		session.Threshold,
+		len(session.Participants),
+	)
+	for i, participant := range session.Participants {
+		fmt.Printf(
+			"participant[%d] id=%s type=%s pubkey_len=%d\n",
+			i,
+			participant.ID,
+			participant.ParticipantType,
+			len(participant.IdentityPublicKeyHex),
+		)
+	}
 }
 
 func exitf(format string, args ...any) {

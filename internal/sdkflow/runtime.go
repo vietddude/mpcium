@@ -19,7 +19,7 @@ type Runtime struct {
 	service      *Service
 	keygenBroker messaging.MessageBroker
 	signBroker   messaging.MessageBroker
-	resultQueue  messaging.MessageQueue
+	resultJS     jetstream.JetStream
 	keygenSub    messaging.MessageSubscription
 	signSub      messaging.MessageSubscription
 }
@@ -55,18 +55,19 @@ func NewRuntime(ctx context.Context, cfg Config) (*Runtime, error) {
 		return nil, err
 	}
 
-	mqManager := messaging.NewNATsMessageQueueManager(
-		resultStreamName,
-		ResultStreamSubjects(),
-		service.natsConn,
-	)
-	resultQueue := mqManager.NewMessageQueue(resultStreamName, resultSubjectGlob)
+	resultJS, err := newResultJetStream(service.natsConn)
+	if err != nil {
+		_ = signBroker.Close()
+		_ = keygenBroker.Close()
+		_ = service.Close()
+		return nil, err
+	}
 	return &Runtime{
 		cfg:          cfg,
 		service:      service,
 		keygenBroker: keygenBroker,
 		signBroker:   signBroker,
-		resultQueue:  resultQueue,
+		resultJS:     resultJS,
 	}, nil
 }
 
@@ -76,9 +77,6 @@ func (r *Runtime) Close() error {
 	}
 	if r.signSub != nil {
 		_ = r.signSub.Unsubscribe()
-	}
-	if r.resultQueue != nil {
-		r.resultQueue.Close()
 	}
 	if r.keygenBroker != nil {
 		_ = r.keygenBroker.Close()
@@ -256,12 +254,11 @@ func (r *Runtime) publishKeygenResult(msg jetstream.Msg, result KeygenResult) er
 		return err
 	}
 	clientID := msg.Headers().Get(event.ClientIDHeader)
-	return r.resultQueue.Enqueue(
+	return publishResult(
+		r.resultJS,
 		KeygenResultSubject(clientID, result.SessionID),
 		payload,
-		&messaging.EnqueueOptions{
-			IdempotententKey: "sdkflow:keygen:" + result.SessionID,
-		},
+		"sdkflow:keygen:"+result.SessionID,
 	)
 }
 
@@ -285,12 +282,11 @@ func (r *Runtime) publishSignResult(msg jetstream.Msg, result SignResult) error 
 		return err
 	}
 	clientID := msg.Headers().Get(event.ClientIDHeader)
-	return r.resultQueue.Enqueue(
+	return publishResult(
+		r.resultJS,
 		SignResultSubject(clientID, result.SessionID),
 		payload,
-		&messaging.EnqueueOptions{
-			IdempotententKey: "sdkflow:sign:" + result.SessionID,
-		},
+		"sdkflow:sign:"+result.SessionID,
 	)
 }
 
@@ -336,6 +332,41 @@ func (r *Runtime) shouldReportSign(recipients []Participant) bool {
 
 func requestTimeout(cfg Config) time.Duration {
 	return parseDurationOrDefault(cfg.Runtime.RequestTimeout, 45*time.Second)
+}
+
+func newResultJetStream(nc *nats.Conn) (jetstream.JetStream, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, err
+	}
+	_, err = js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+		Name:        resultStreamName,
+		Description: "Stream for " + resultStreamName,
+		Subjects:    ResultStreamSubjects(),
+		MaxBytes:    100_000_000,
+		Storage:     jetstream.FileStorage,
+		Retention:   jetstream.WorkQueuePolicy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return js, nil
+}
+
+func publishResult(js jetstream.JetStream, subject string, payload []byte, idempotencyKey string) error {
+	if js == nil {
+		return fmt.Errorf("result jetstream context is required")
+	}
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    payload,
+	}
+	if idempotencyKey != "" {
+		msg.Header = nats.Header{}
+		msg.Header.Set("Nats-Msg-Id", idempotencyKey)
+	}
+	_, err := js.PublishMsg(context.Background(), msg)
+	return err
 }
 
 func maxOrDefault(value, fallback int) int {

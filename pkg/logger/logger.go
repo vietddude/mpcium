@@ -9,6 +9,8 @@ import (
 
 var Log zerolog.Logger
 
+const callerSkipFrame = 1
+
 func Init(env string, debug bool) {
 	if debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
@@ -36,9 +38,9 @@ func Debug(msg string, keyValues ...interface{}) {
 
 	l := len(keyValues)
 	if l%2 != 0 {
-		Log.Warn().Caller().Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
+		Log.Warn().CallerSkipFrame(callerSkipFrame).Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
 	} else {
-		ctx := Log.Debug()
+		ctx := Log.Debug().CallerSkipFrame(callerSkipFrame)
 
 		for i := 0; i < len(keyValues); i += 2 {
 			key, value := keyValues[i].(string), keyValues[i+1]
@@ -61,9 +63,9 @@ func Info(msg string, keyValues ...interface{}) {
 
 	l := len(keyValues)
 	if l%2 != 0 {
-		Log.Warn().Caller().Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
+		Log.Warn().CallerSkipFrame(callerSkipFrame).Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
 	} else {
-		ctx := Log.Info()
+		ctx := Log.Info().CallerSkipFrame(callerSkipFrame)
 
 		for i := 0; i < len(keyValues); i += 2 {
 			key, value := keyValues[i].(string), keyValues[i+1]
@@ -85,9 +87,9 @@ func Warn(msg string, keyValues ...interface{}) {
 
 	l := len(keyValues)
 	if l%2 != 0 {
-		Log.Warn().Caller().Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
+		Log.Warn().CallerSkipFrame(callerSkipFrame).Interface("Unknown Key", keyValues).Msgf("%s ([Wrong logger.Info usage] Provided args to logger.Info must be a series of key/value pairs)", msg)
 	} else {
-		ctx := Log.Warn()
+		ctx := Log.Warn().CallerSkipFrame(callerSkipFrame)
 
 		for i := 0; i < len(keyValues); i += 2 {
 			key, value := keyValues[i].(string), keyValues[i+1]
@@ -101,7 +103,7 @@ func Warn(msg string, keyValues ...interface{}) {
 
 // Info logs an info message.
 func Infof(format string, v ...interface{}) {
-	Log.Info().Msgf(format, v...)
+	Log.Info().CallerSkipFrame(callerSkipFrame).Msgf(format, v...)
 }
 
 // Error logs an error message.
@@ -116,7 +118,7 @@ func Error(msg string, err error, keyValues ...interface{}) {
 		ctx = ctx.Interface(key, value)
 	}
 
-	ctx.Caller().Stack().Err(err).Msg(msg)
+	ctx.CallerSkipFrame(callerSkipFrame).Stack().Err(err).Msg(msg)
 }
 
 // Fatal logs a fatal message and exits the program.

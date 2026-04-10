@@ -175,6 +175,40 @@ func TestRuntimeConsumesSharedRequestsAndPublishesResults(t *testing.T) {
 	assert.NotEmpty(t, signResult.Signature)
 }
 
+func TestNewRuntimeDoesNotCreateResultConsumer(t *testing.T) {
+	ns := startJetStreamTestServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	client := NewClient(ClientOptions{
+		NatsConn: nc,
+		ClientID: "client-1",
+	})
+	t.Cleanup(client.Close)
+
+	cfg := Config{
+		Environment: "development",
+		NATS: NATSConfig{
+			URL: ns.ClientURL(),
+		},
+		Runtime: RuntimeConfig{
+			ParticipantID:      "node0",
+			IdentityStoreDir:   filepath.Join(t.TempDir(), "node0", "identity-store"),
+			ECDSAPreparamsPath: fixturePath("node0_pre_params_0.json"),
+			RequestTimeout:     "15s",
+		},
+		Storage: StorageConfig{
+			RootDir: filepath.Join(t.TempDir(), "node0", "state"),
+		},
+	}
+
+	runtime, err := NewRuntime(context.Background(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = runtime.Close() })
+}
+
 func loadOrCreateRuntimeIdentity(cfg Config) (securecrypto.IdentityKeyPair, error) {
 	store := &identityStore{
 		inner: sdkstore.NewFileStore(filepath.Join(cfg.Runtime.IdentityStoreDir, "identity")),
