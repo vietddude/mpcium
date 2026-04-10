@@ -32,12 +32,19 @@ func TestStoreSaveLoadShare(t *testing.T) {
 	assert.Equal(t, []byte("share"), blob)
 }
 
+func TestStoreSaveShareRequiresWalletID(t *testing.T) {
+	store := NewStore(t.TempDir())
+
+	_, err := store.SaveShare("ecdsa", "", []byte("share"))
+	require.Error(t, err)
+	assert.Equal(t, "wallet_id is required", err.Error())
+}
+
 func TestResolveSessionRequiresSessionID(t *testing.T) {
 	service := testServiceForResolve(t, "node-a")
 
 	_, err := service.resolveSession(SessionContext{
 		WalletID:           "wallet-1",
-		KeyID:              "wallet-1",
 		Protocol:           "ecdsa",
 		LocalParticipantID: "node-a",
 		Threshold:          0,
@@ -55,13 +62,22 @@ func TestResolveSessionBuildsParticipants(t *testing.T) {
 	resolved, err := service.resolveSession(SessionContext{
 		SessionID:          "session-1",
 		WalletID:           "wallet-1",
-		KeyID:              "wallet-1",
 		Protocol:           "ecdsa",
 		LocalParticipantID: "node-a",
 		Threshold:          1,
 		Participants: []Participant{
-			{ID: "node-a", Moniker: "Node A", UniqueKeyHex: "6e6f64652d61", IdentityPublicKeyHex: strings.Repeat("11", 32)},
-			{ID: "node-b", Moniker: "Node B", UniqueKeyHex: "6e6f64652d62", IdentityPublicKeyHex: strings.Repeat("22", 32)},
+			{
+				ID:                   "node-a",
+				Moniker:              "Node A",
+				UniqueKeyHex:         "6e6f64652d61",
+				IdentityPublicKeyHex: strings.Repeat("11", 32),
+			},
+			{
+				ID:                   "node-b",
+				Moniker:              "Node B",
+				UniqueKeyHex:         "6e6f64652d62",
+				IdentityPublicKeyHex: strings.Repeat("22", 32),
+			},
 		},
 	})
 	require.NoError(t, err)
@@ -116,7 +132,6 @@ func TestServiceKeygenAndSignAcrossTwoParticipants(t *testing.T) {
 		{Session: SessionContext{
 			SessionID:          "keygen-session-1",
 			WalletID:           "wallet-1",
-			KeyID:              "wallet-1",
 			Protocol:           "ecdsa",
 			Operation:          "keygen",
 			LocalParticipantID: "alice",
@@ -126,7 +141,6 @@ func TestServiceKeygenAndSignAcrossTwoParticipants(t *testing.T) {
 		{Session: SessionContext{
 			SessionID:          "keygen-session-1",
 			WalletID:           "wallet-1",
-			KeyID:              "wallet-1",
 			Protocol:           "ecdsa",
 			Operation:          "keygen",
 			LocalParticipantID: "bob",
@@ -135,7 +149,11 @@ func TestServiceKeygenAndSignAcrossTwoParticipants(t *testing.T) {
 		}},
 	}
 
-	runConcurrent(t, func() error { _, err := alice.RunKeygen(ctx, keygenReqs[0]); return err }, func() error { _, err := bob.RunKeygen(ctx, keygenReqs[1]); return err })
+	runConcurrent(
+		t,
+		func() error { _, err := alice.RunKeygen(ctx, keygenReqs[0]); return err },
+		func() error { _, err := bob.RunKeygen(ctx, keygenReqs[1]); return err },
+	)
 
 	aliceShare, _, err := alice.store.LoadShare("ecdsa", "wallet-1")
 	require.NoError(t, err)
@@ -148,7 +166,6 @@ func TestServiceKeygenAndSignAcrossTwoParticipants(t *testing.T) {
 		Session: SessionContext{
 			SessionID:          "sign-session-1",
 			WalletID:           "wallet-1",
-			KeyID:              "wallet-1",
 			Protocol:           "ecdsa",
 			Operation:          "sign",
 			LocalParticipantID: "alice",
@@ -220,7 +237,11 @@ func buildParticipantsFromServices(t *testing.T, services ...*Service) []Partici
 	t.Helper()
 	participants := make([]Participant, 0, len(services))
 	for _, service := range services {
-		store := &identityStore{inner: sdkstore.NewFileStore(filepath.Join(service.cfg.Runtime.IdentityStoreDir, "identity"))}
+		store := &identityStore{
+			inner: sdkstore.NewFileStore(
+				filepath.Join(service.cfg.Runtime.IdentityStoreDir, "identity"),
+			),
+		}
 		key, err := securecrypto.LoadOrCreateIdentity(store, identityRef(service.cfg), rand.Reader)
 		require.NoError(t, err)
 		participants = append(participants, Participant{

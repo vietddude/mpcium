@@ -15,7 +15,6 @@ const (
 var (
 	ErrInvalidNATSSubject     = fmt.Errorf("invalid relay nats subject")
 	ErrInvalidMQTTTopic       = fmt.Errorf("invalid relay mqtt topic")
-	ErrCosignerMismatch       = fmt.Errorf("mqtt topic cosigner does not match authenticated session")
 	ErrInvalidOutboundSubject = fmt.Errorf("invalid outbound relay nats subject")
 )
 
@@ -47,14 +46,10 @@ func (topicMapper) NatsToMQTT(subject string) (string, error) {
 	return strings.Join(parts, "/"), nil
 }
 
-func (topicMapper) MQTTToNATS(topic, authenticatedCosignerID string) (string, error) {
+func (topicMapper) MQTTToNATS(topic, _ string) (string, error) {
 	route, err := parseConcreteMQTTTopic(topic)
 	if err != nil {
 		return "", err
-	}
-
-	if route.CosignerID != authenticatedCosignerID {
-		return "", ErrCosignerMismatch
 	}
 
 	parts := []string{InboundNATSSubjectPrefix, route.CosignerID, route.WalletID}
@@ -167,11 +162,12 @@ func validateMQTTTail(tail []string) error {
 }
 
 func allowedMQTTNamespace(topic, cosignerID string, write bool) bool {
+	if write {
+		return strings.HasPrefix(topic, MQTTTopicPrefix+"/") && !strings.ContainsAny(topic, "+#")
+	}
+
 	base := MQTTTopicPrefix + "/" + cosignerID
 	if topic == base || strings.HasPrefix(topic, base+"/") {
-		if write {
-			return !strings.ContainsAny(topic, "+#")
-		}
 		return true
 	}
 

@@ -17,68 +17,105 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRuntimeConsumesTargetedRequestsAndPublishesResults(t *testing.T) {
+func TestRuntimeConsumesSharedRequestsAndPublishesResults(t *testing.T) {
 	ns := startJetStreamTestServer(t)
 
-	cfg := Config{
+	aliceCfg := Config{
 		Environment: "development",
 		NATS: NATSConfig{
 			URL: ns.ClientURL(),
 		},
 		Runtime: RuntimeConfig{
-			ParticipantID:      "solo",
-			IdentityStoreDir:   filepath.Join(t.TempDir(), "solo", "identity-store"),
+			ParticipantID:      "alice",
+			IdentityStoreDir:   filepath.Join(t.TempDir(), "alice", "identity-store"),
 			ECDSAPreparamsPath: fixturePath("node0_pre_params_0.json"),
 			RequestTimeout:     "15s",
 		},
 		Storage: StorageConfig{
-			RootDir: filepath.Join(t.TempDir(), "solo", "state"),
+			RootDir: filepath.Join(t.TempDir(), "alice", "state"),
+		},
+	}
+	bobCfg := Config{
+		Environment: "development",
+		NATS: NATSConfig{
+			URL: ns.ClientURL(),
+		},
+		Runtime: RuntimeConfig{
+			ParticipantID:      "bob",
+			IdentityStoreDir:   filepath.Join(t.TempDir(), "bob", "identity-store"),
+			ECDSAPreparamsPath: fixturePath("node1_pre_params_0.json"),
+			RequestTimeout:     "15s",
+		},
+		Storage: StorageConfig{
+			RootDir: filepath.Join(t.TempDir(), "bob", "state"),
 		},
 	}
 
-	runtime, err := NewRuntime(context.Background(), cfg)
+	aliceRuntime, err := NewRuntime(context.Background(), aliceCfg)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runtime.Close() })
+	t.Cleanup(func() { _ = aliceRuntime.Close() })
+	bobRuntime, err := NewRuntime(context.Background(), bobCfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = bobRuntime.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		_ = runtime.Start(ctx)
+		_ = aliceRuntime.Start(ctx)
 	}()
+	go func() {
+		_ = bobRuntime.Start(ctx)
+	}()
+	require.Eventually(t, func() bool {
+		return aliceRuntime.keygenSub != nil &&
+			aliceRuntime.signSub != nil &&
+			bobRuntime.keygenSub != nil &&
+			bobRuntime.signSub != nil
+	}, 2*time.Second, 10*time.Millisecond)
 
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	keygenResultSub, err := nc.SubscribeSync(KeygenResultSubject("client-1", "single-keygen"))
+	keygenResultSub, err := nc.SubscribeSync(KeygenResultSubject("client-1", "shared-keygen"))
 	require.NoError(t, err)
 
-	key, err := loadOrCreateRuntimeIdentity(cfg)
+	aliceKey, err := loadOrCreateRuntimeIdentity(aliceCfg)
+	require.NoError(t, err)
+	bobKey, err := loadOrCreateRuntimeIdentity(bobCfg)
 	require.NoError(t, err)
 	participants := []Participant{
 		{
-			ID:                   "solo",
-			Moniker:              "solo",
-			IdentityPublicKeyHex: hexString(key.PublicKey),
+			ID:                   "alice",
+			Moniker:              "alice",
+			IdentityPublicKeyHex: hexString(aliceKey.PublicKey),
+		},
+		{
+			ID:                   "bob",
+			Moniker:              "bob",
+			IdentityPublicKeyHex: hexString(bobKey.PublicKey),
 		},
 	}
 	keygenReq := KeygenRequest{
 		Session: SessionContext{
-			SessionID:          "single-keygen",
-			WalletID:           "wallet-1",
-			KeyID:              "wallet-1",
-			Protocol:           "ecdsa",
-			Operation:          "keygen",
-			LocalParticipantID: "solo",
-			Threshold:          0,
-			Participants:       participants,
+			SessionID:    "shared-keygen",
+			WalletID:     "wallet-1",
+			Protocol:     "ecdsa",
+			Operation:    "keygen",
+			Threshold:    1,
+			Participants: participants,
 		},
 	}
 	keygenPayload, err := json.Marshal(keygenReq)
 	require.NoError(t, err)
 
 	require.NoError(t, nc.PublishMsg(&nats.Msg{
-		Subject: KeygenRequestSubject("solo"),
+		Subject: KeygenRequestSubject("alice", "wallet-1", "shared-keygen"),
+		Data:    keygenPayload,
+		Header:  nats.Header{event.ClientIDHeader: []string{"client-1"}},
+	}))
+	require.NoError(t, nc.PublishMsg(&nats.Msg{
+		Subject: KeygenRequestSubject("bob", "wallet-1", "shared-keygen"),
 		Data:    keygenPayload,
 		Header:  nats.Header{event.ClientIDHeader: []string{"client-1"}},
 	}))
@@ -88,32 +125,43 @@ func TestRuntimeConsumesTargetedRequestsAndPublishesResults(t *testing.T) {
 
 	var keygenResult KeygenResult
 	require.NoError(t, json.Unmarshal(keygenMsg.Data, &keygenResult))
-	assert.Equal(t, event.ResultTypeSuccess, keygenResult.ResultType)
+	assert.Equalf(t, event.ResultTypeSuccess, keygenResult.ResultType, "keygen error: %s", keygenResult.ErrorReason)
 	assert.NotEmpty(t, keygenResult.ShareRef)
 	assert.NotEmpty(t, keygenResult.PubKey)
+	require.Eventually(t, func() bool {
+		_, _, err := aliceRuntime.service.store.LoadShare("ecdsa", "wallet-1")
+		if err != nil {
+			return false
+		}
+		_, _, err = bobRuntime.service.store.LoadShare("ecdsa", "wallet-1")
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond)
 
-	signResultSub, err := nc.SubscribeSync(SignResultSubject("client-1", "single-sign"))
+	signResultSub, err := nc.SubscribeSync(SignResultSubject("client-1", "shared-sign"))
 	require.NoError(t, err)
 
 	signReq := SignRequest{
 		Session: SessionContext{
-			SessionID:          "single-sign",
-			WalletID:           "wallet-1",
-			KeyID:              "wallet-1",
-			Protocol:           "ecdsa",
-			Operation:          "sign",
-			LocalParticipantID: "solo",
-			Threshold:          0,
-			Participants:       participants,
+			SessionID:    "shared-sign",
+			WalletID:     "wallet-1",
+			Protocol:     "ecdsa",
+			Operation:    "sign",
+			Threshold:    1,
+			Participants: participants,
 		},
-		SignerIndexes:    []uint16{0},
+		SignerIndexes:    []uint16{0, 1},
 		MessageDigestHex: strings.Repeat("01", 32),
 	}
 	signPayload, err := json.Marshal(signReq)
 	require.NoError(t, err)
 
 	require.NoError(t, nc.PublishMsg(&nats.Msg{
-		Subject: SignRequestSubject("solo"),
+		Subject: SignRequestSubject("alice", "wallet-1", "shared-sign"),
+		Data:    signPayload,
+		Header:  nats.Header{event.ClientIDHeader: []string{"client-1"}},
+	}))
+	require.NoError(t, nc.PublishMsg(&nats.Msg{
+		Subject: SignRequestSubject("bob", "wallet-1", "shared-sign"),
 		Data:    signPayload,
 		Header:  nats.Header{event.ClientIDHeader: []string{"client-1"}},
 	}))
@@ -123,11 +171,13 @@ func TestRuntimeConsumesTargetedRequestsAndPublishesResults(t *testing.T) {
 
 	var signResult SignResult
 	require.NoError(t, json.Unmarshal(signMsg.Data, &signResult))
-	assert.Equal(t, event.ResultTypeSuccess, signResult.ResultType)
+	assert.Equalf(t, event.ResultTypeSuccess, signResult.ResultType, "sign error: %s", signResult.ErrorReason)
 	assert.NotEmpty(t, signResult.Signature)
 }
 
 func loadOrCreateRuntimeIdentity(cfg Config) (securecrypto.IdentityKeyPair, error) {
-	store := &identityStore{inner: sdkstore.NewFileStore(filepath.Join(cfg.Runtime.IdentityStoreDir, "identity"))}
+	store := &identityStore{
+		inner: sdkstore.NewFileStore(filepath.Join(cfg.Runtime.IdentityStoreDir, "identity")),
+	}
 	return securecrypto.LoadOrCreateIdentity(store, identityRef(cfg), rand.Reader)
 }

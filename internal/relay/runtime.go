@@ -170,7 +170,11 @@ func (r *Runtime) handleOutboundNATSMessage(msg *nats.Msg) {
 	}
 
 	if _, ok := r.sessions.Get(route.CosignerID); !ok {
-		logger.Info("Relay dropped outbound message for offline cosigner", "cosigner_id", route.CosignerID, "subject", msg.Subject)
+		logger.Info(
+			"Relay dropped outbound message without active MQTT cosigner session",
+			"cosigner_id", route.CosignerID,
+			"subject", msg.Subject,
+		)
 		return
 	}
 

@@ -16,15 +16,13 @@ import (
 	"github.com/decred/dcrd/dcrec/edwards/v2"
 	"github.com/fystack/mpcium-sdk/mpcore"
 	"github.com/fystack/mpcium-sdk/secure"
+	"github.com/fystack/mpcium-sdk/securecrypto"
 	sdkstore "github.com/fystack/mpcium-sdk/store"
-	"github.com/fystack/mpcium/internal/relay"
 	"github.com/fystack/mpcium/pkg/encoding"
 	"github.com/fystack/mpcium/pkg/event"
 	"github.com/fystack/mpcium/pkg/logger"
 	"github.com/nats-io/nats.go"
 )
-
-const relayTail = "sdkflow"
 
 type Service struct {
 	cfg            Config
@@ -46,13 +44,20 @@ func NewService(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{
-		cfg:            cfg,
-		natsConn:       nc,
-		store:          NewStore(cfg.Storage.RootDir),
-		identityStore:  &identityStore{inner: sdkstore.NewFileStore(filepath.Join(cfg.Runtime.IdentityStoreDir, "identity"))},
+	service := &Service{
+		cfg:      cfg,
+		natsConn: nc,
+		store:    NewStore(cfg.Storage.RootDir),
+		identityStore: &identityStore{
+			inner: sdkstore.NewFileStore(filepath.Join(cfg.Runtime.IdentityStoreDir, "identity")),
+		},
 		ecdsaPreparams: preparams,
-	}, nil
+	}
+	if err := service.logLocalIdentityPublicKey(); err != nil {
+		_ = service.Close()
+		return nil, fmt.Errorf("load local identity: %w", err)
+	}
+	return service, nil
 }
 
 func (s *Service) Close() error {
@@ -67,6 +72,10 @@ func (s *Service) RunKeygen(ctx context.Context, req KeygenRequest) (*KeygenResu
 	if err != nil {
 		return nil, err
 	}
+	keyID := strings.TrimSpace(resolved.Session.WalletID)
+	if keyID == "" {
+		return nil, fmt.Errorf("wallet_id is required for sdk key_id")
+	}
 	cfg := mpcore.SessionConfig{
 		SessionID:          resolved.Session.SessionID,
 		Protocol:           resolved.Protocol,
@@ -74,29 +83,37 @@ func (s *Service) RunKeygen(ctx context.Context, req KeygenRequest) (*KeygenResu
 		Participants:       resolved.Participants,
 		LocalIndex:         resolved.LocalIndex,
 		Threshold:          resolved.Session.Threshold,
-		KeyID:              resolved.Session.KeyID,
+		WalletID:           keyID,
 		ECDSAPreparamsBlob: s.ecdsaPreparams,
 	}
 	result, err := s.runSecureSession(ctx, resolved, cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf(
+			"run keygen secure session for wallet_id %q session_id %q: %w",
+			resolved.Session.WalletID,
+			resolved.Session.SessionID,
+			err,
+		)
 	}
 	if result == nil || len(result.ShareBlob) == 0 {
 		return nil, fmt.Errorf("keygen completed without share")
 	}
-	ref, err := s.store.SaveShare(req.Session.Protocol, resolved.Session.KeyID, result.ShareBlob)
+	ref, err := s.store.SaveShare(
+		string(req.Session.Protocol),
+		resolved.Session.WalletID,
+		result.ShareBlob,
+	)
 	if err != nil {
 		return nil, err
 	}
-	pubKey, err := derivePublicKey(req.Session.Protocol, result.ShareBlob, s.ecdsaPreparams)
+	pubKey, err := derivePublicKey(string(req.Session.Protocol), result.ShareBlob, s.ecdsaPreparams)
 	if err != nil {
 		return nil, err
 	}
 	return &KeygenResult{
 		SessionID:  resolved.Session.SessionID,
 		WalletID:   resolved.Session.WalletID,
-		KeyID:      resolved.Session.KeyID,
-		Protocol:   resolved.Session.Protocol,
+		Protocol:   string(resolved.Session.Protocol),
 		ShareRef:   ref,
 		PubKey:     pubKey,
 		ResultType: event.ResultTypeSuccess,
@@ -108,7 +125,11 @@ func (s *Service) RunSign(ctx context.Context, req SignRequest) (*SignResult, er
 	if err != nil {
 		return nil, err
 	}
-	shareBlob, _, err := s.store.LoadShare(req.Session.Protocol, resolved.Session.KeyID)
+	keyID := strings.TrimSpace(resolved.Session.WalletID)
+	if keyID == "" {
+		return nil, fmt.Errorf("wallet_id is required for sdk key_id")
+	}
+	shareBlob, _, err := s.store.LoadShare(string(req.Session.Protocol), resolved.Session.WalletID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +148,7 @@ func (s *Service) RunSign(ctx context.Context, req SignRequest) (*SignResult, er
 		Participants:       resolved.Participants,
 		LocalIndex:         resolved.LocalIndex,
 		Threshold:          resolved.Session.Threshold,
-		KeyID:              resolved.Session.KeyID,
+		WalletID:           keyID,
 		SignerIndexes:      append([]uint16(nil), req.SignerIndexes...),
 		MessageDigest:      messageDigest,
 		ChainCode:          chainCode,
@@ -144,7 +165,12 @@ func (s *Service) RunSign(ctx context.Context, req SignRequest) (*SignResult, er
 	}
 	result, err := s.runSecureSession(ctx, resolved, cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf(
+			"run sign secure session for wallet_id %q session_id %q: %w",
+			resolved.Session.WalletID,
+			resolved.Session.SessionID,
+			err,
+		)
 	}
 	if result == nil || result.Signature == nil {
 		return nil, fmt.Errorf("sign completed without signature")
@@ -152,8 +178,7 @@ func (s *Service) RunSign(ctx context.Context, req SignRequest) (*SignResult, er
 	return &SignResult{
 		SessionID:         resolved.Session.SessionID,
 		WalletID:          resolved.Session.WalletID,
-		KeyID:             resolved.Session.KeyID,
-		Protocol:          resolved.Session.Protocol,
+		Protocol:          string(resolved.Session.Protocol),
 		Signature:         append([]byte(nil), result.Signature.Signature...),
 		SignatureRecovery: append([]byte(nil), result.Signature.SignatureRecovery...),
 		R:                 append([]byte(nil), result.Signature.R...),
@@ -177,14 +202,15 @@ func (s *Service) resolveSession(session SessionContext) (*resolvedSession, erro
 	if strings.TrimSpace(session.WalletID) == "" {
 		return nil, fmt.Errorf("wallet_id is required")
 	}
-	if strings.TrimSpace(session.KeyID) == "" {
-		session.KeyID = session.WalletID
-	}
 	if strings.TrimSpace(session.LocalParticipantID) == "" {
 		return nil, fmt.Errorf("local_participant_id is required")
 	}
 	if session.LocalParticipantID != s.cfg.Runtime.ParticipantID {
-		return nil, fmt.Errorf("request local_participant_id %q does not match runtime participant_id %q", session.LocalParticipantID, s.cfg.Runtime.ParticipantID)
+		return nil, fmt.Errorf(
+			"request local_participant_id %q does not match runtime participant_id %q",
+			session.LocalParticipantID,
+			s.cfg.Runtime.ParticipantID,
+		)
 	}
 	protocol, err := parseProtocol(session.Protocol)
 	if err != nil {
@@ -225,7 +251,10 @@ func (s *Service) resolveSession(session SessionContext) (*resolvedSession, erro
 		}
 	}
 	if localIndex < 0 {
-		return nil, fmt.Errorf("local participant %q is not in participants", session.LocalParticipantID)
+		return nil, fmt.Errorf(
+			"local participant %q is not in participants",
+			session.LocalParticipantID,
+		)
 	}
 	return &resolvedSession{
 		Session:        session,
@@ -236,11 +265,11 @@ func (s *Service) resolveSession(session SessionContext) (*resolvedSession, erro
 	}, nil
 }
 
-func parseProtocol(value string) (mpcore.Protocol, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "ecdsa":
+func parseProtocol(value Protocol) (mpcore.Protocol, error) {
+	switch strings.ToLower(strings.TrimSpace(string(value))) {
+	case string(ProtocolECDSA):
 		return mpcore.ProtocolECDSA, nil
-	case "eddsa":
+	case string(ProtocolEdDSA):
 		return mpcore.ProtocolEdDSA, nil
 	default:
 		return 0, fmt.Errorf("unsupported protocol %q", value)
@@ -294,12 +323,32 @@ func derivePublicKey(protocol string, shareBlob, preparams []byte) ([]byte, erro
 	}
 }
 
-func (s *Service) runSecureSession(ctx context.Context, session *resolvedSession, cfg mpcore.SessionConfig) (*mpcore.Result, error) {
+func (s *Service) runSecureSession(
+	ctx context.Context,
+	session *resolvedSession,
+	cfg mpcore.SessionConfig,
+) (*mpcore.Result, error) {
 	runner, err := newSessionRunner(session, cfg, s.natsConn, s.identityStore, s.cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf(
+			"initialize secure session for operation %q wallet_id %q session_id %q: %w",
+			cfg.Operation.String(),
+			session.Session.WalletID,
+			cfg.SessionID,
+			err,
+		)
 	}
-	return runner.Run(ctx)
+	result, err := runner.Run(ctx)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"execute secure session for operation %q wallet_id %q session_id %q: %w",
+			cfg.Operation.String(),
+			session.Session.WalletID,
+			cfg.SessionID,
+			err,
+		)
+	}
+	return result, nil
 }
 
 func connectNATS(cfg NATSConfig) (*nats.Conn, error) {
@@ -342,7 +391,7 @@ type sessionRunner struct {
 	cfg               mpcore.SessionConfig
 	natsConn          *nats.Conn
 	session           *secure.SecureSession
-	sub               *nats.Subscription
+	subs              []*nats.Subscription
 	readyPeers        map[string]struct{}
 	peerReadyTimeout  time.Duration
 	peerReadyInterval time.Duration
@@ -368,7 +417,13 @@ type envelope struct {
 	SentAt    string          `json:"sent_at"`
 }
 
-func newSessionRunner(resolved *resolvedSession, cfg mpcore.SessionConfig, nc *nats.Conn, store secure.IdentityStore, appCfg Config) (*sessionRunner, error) {
+func newSessionRunner(
+	resolved *resolvedSession,
+	cfg mpcore.SessionConfig,
+	nc *nats.Conn,
+	store secure.IdentityStore,
+	appCfg Config,
+) (*sessionRunner, error) {
 	session, err := secure.NewSession(secure.SecureSessionConfig{
 		Session:        cfg,
 		IdentityStore:  store,
@@ -379,31 +434,33 @@ func newSessionRunner(resolved *resolvedSession, cfg mpcore.SessionConfig, nc *n
 		return nil, err
 	}
 	return &sessionRunner{
-		resolved:          resolved,
-		cfg:               cfg,
-		natsConn:          nc,
-		session:           session,
-		readyPeers:        map[string]struct{}{},
-		peerReadyTimeout:  parseDurationOrDefault(appCfg.Runtime.PeerReadyTimeout, 10*time.Second),
-		peerReadyInterval: parseDurationOrDefault(appCfg.Runtime.PeerReadyInterval, 300*time.Millisecond),
+		resolved:         resolved,
+		cfg:              cfg,
+		natsConn:         nc,
+		session:          session,
+		readyPeers:       map[string]struct{}{},
+		peerReadyTimeout: parseDurationOrDefault(appCfg.Runtime.PeerReadyTimeout, 10*time.Second),
+		peerReadyInterval: parseDurationOrDefault(
+			appCfg.Runtime.PeerReadyInterval,
+			300*time.Millisecond,
+		),
 	}, nil
 }
 
 func (r *sessionRunner) Run(ctx context.Context) (*mpcore.Result, error) {
-	inboundSubject := relay.InboundNATSSubject(
-		r.resolved.Session.LocalParticipantID,
-		r.resolved.Session.WalletID,
-		r.cfg.Operation.String(),
-		r.cfg.SessionID,
-		relayTail,
-	)
 	msgCh := make(chan *nats.Msg, 256)
-	sub, err := r.natsConn.ChanSubscribe(inboundSubject, msgCh)
-	if err != nil {
-		return nil, err
+	for _, subject := range r.inboundSubjects() {
+		sub, err := r.natsConn.ChanSubscribe(subject, msgCh)
+		if err != nil {
+			return nil, err
+		}
+		r.subs = append(r.subs, sub)
 	}
-	r.sub = sub
-	defer func() { _ = r.sub.Unsubscribe() }()
+	defer func() {
+		for _, sub := range r.subs {
+			_ = sub.Unsubscribe()
+		}
+	}()
 	if err := r.natsConn.Flush(); err != nil {
 		return nil, err
 	}
@@ -534,7 +591,10 @@ func (r *sessionRunner) publishEnvelope(peerID string, env envelope) error {
 	if err != nil {
 		return err
 	}
-	subject := relay.OutboundNATSSubject(peerID, r.resolved.Session.WalletID, r.cfg.Operation.String(), r.cfg.SessionID, relayTail)
+	subject, err := r.outboundSubject(peerID)
+	if err != nil {
+		return err
+	}
 	return r.natsConn.Publish(subject, payload)
 }
 
@@ -580,7 +640,8 @@ func (r *sessionRunner) recipientsForMessage(message secure.Message) ([]string, 
 	case secure.MessageTypeSignedBroadcast:
 		return r.peerIDsExceptSelf(), nil
 	case secure.MessageTypeEncryptedDirect:
-		if message.EncryptedDirect == nil || len(message.EncryptedDirect.Message.RecipientIndexes) != 1 {
+		if message.EncryptedDirect == nil ||
+			len(message.EncryptedDirect.Message.RecipientIndexes) != 1 {
 			return nil, fmt.Errorf("encrypted direct message must have exactly one recipient")
 		}
 		index := message.EncryptedDirect.Message.RecipientIndexes[0]
@@ -616,11 +677,60 @@ func (r *sessionRunner) hasAllReadyPeers(peers []string) bool {
 	return true
 }
 
+func (r *sessionRunner) inboundSubjects() []string {
+	subjects := make([]string, 0, 2)
+	localID := r.resolved.Session.LocalParticipantID
+	walletID := r.resolved.Session.WalletID
+	operation := Operation(r.cfg.Operation.String())
+	sessionID := r.cfg.SessionID
+
+	if !r.isExternalParticipantID(localID) {
+		subjects = append(subjects, DirectSessionSubject(localID, walletID, operation, sessionID))
+	}
+	subjects = append(subjects, RelayInboundSessionSubject(localID, walletID, operation, sessionID))
+	return subjects
+}
+
+func (r *sessionRunner) outboundSubject(peerID string) (string, error) {
+	operation := Operation(r.cfg.Operation.String())
+	if r.isExternalParticipantID(peerID) {
+		return RelayOutboundSessionSubject(peerID, r.resolved.Session.WalletID, operation, r.cfg.SessionID), nil
+	}
+	return DirectSessionSubject(peerID, r.resolved.Session.WalletID, operation, r.cfg.SessionID), nil
+}
+
+func (r *sessionRunner) isExternalParticipantID(participantID string) bool {
+	for _, participant := range r.resolved.Session.Participants {
+		if participant.ID != participantID {
+			continue
+		}
+		return isExternalParticipant(participant)
+	}
+	return false
+}
+
 func identityRef(cfg Config) string {
 	if cfg.Runtime.IdentityRef != "" {
 		return cfg.Runtime.IdentityRef
 	}
 	return cfg.Runtime.ParticipantID
+}
+
+func (s *Service) logLocalIdentityPublicKey() error {
+	key, err := securecrypto.LoadOrCreateIdentity(s.identityStore, identityRef(s.cfg), nil)
+	if err != nil {
+		return err
+	}
+	logger.Info(
+		"SDK flow local identity loaded",
+		"participant_id",
+		s.cfg.Runtime.ParticipantID,
+		"identity_ref",
+		identityRef(s.cfg),
+		"identity_public_key_hex",
+		strings.ToLower(hex.EncodeToString(key.PublicKey)),
+	)
+	return nil
 }
 
 func parseDurationOrDefault(value string, fallback time.Duration) time.Duration {
@@ -657,7 +767,13 @@ func ensureECDSAPreparams(cfg Config) ([]byte, error) {
 		return nil, err
 	}
 
-	logger.Info("ECDSA preparams not found; generating new preparams", "path", path, "participant_id", cfg.Runtime.ParticipantID)
+	logger.Info(
+		"ECDSA preparams not found; generating new preparams",
+		"path",
+		path,
+		"participant_id",
+		cfg.Runtime.ParticipantID,
+	)
 	params, err := ecdsakeygen.GeneratePreParams(5 * time.Minute)
 	if err != nil {
 		return nil, err
@@ -672,6 +788,12 @@ func ensureECDSAPreparams(cfg Config) ([]byte, error) {
 	if err := os.WriteFile(path, blob, 0o600); err != nil {
 		return nil, err
 	}
-	logger.Info("ECDSA preparams generated and saved", "path", path, "participant_id", cfg.Runtime.ParticipantID)
+	logger.Info(
+		"ECDSA preparams generated and saved",
+		"path",
+		path,
+		"participant_id",
+		cfg.Runtime.ParticipantID,
+	)
 	return blob, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/fystack/mpcium/pkg/event"
@@ -26,10 +27,12 @@ type ClientOptions struct {
 }
 
 type client struct {
-	keygenBroker messaging.MessageBroker
-	signBroker   messaging.MessageBroker
-	resultQueue  messaging.MessageQueue
-	clientID     string
+	keygenBroker      messaging.MessageBroker
+	signBroker        messaging.MessageBroker
+	keygenResultQueue messaging.MessageQueue
+	signResultQueue   messaging.MessageQueue
+	natsConn          *nats.Conn
+	clientID          string
 }
 
 func NewClient(opts ClientOptions) Client {
@@ -40,32 +43,49 @@ func NewClient(opts ClientOptions) Client {
 		logger.Fatal("Invalid client ID", err)
 	}
 
-	keygenBroker, err := messaging.NewJetStreamBroker(context.Background(), opts.NatsConn, KeygenRequestStream, []string{
-		KeygenRequestTopic(),
-	})
+	keygenBroker, err := messaging.NewJetStreamBroker(
+		context.Background(),
+		opts.NatsConn,
+		KeygenRequestStream,
+		[]string{KeygenRequestTopic()},
+	)
 	if err != nil {
 		logger.Fatal("Failed to create sdkflow keygen broker", err)
 	}
-	signBroker, err := messaging.NewJetStreamBroker(context.Background(), opts.NatsConn, SignRequestStream, []string{
-		SignRequestTopic(),
-	})
+	signBroker, err := messaging.NewJetStreamBroker(
+		context.Background(),
+		opts.NatsConn,
+		SignRequestStream,
+		[]string{SignRequestTopic()},
+	)
 	if err != nil {
 		logger.Fatal("Failed to create sdkflow sign broker", err)
 	}
-	mqManager := messaging.NewNATsMessageQueueManager("mpc_sdkflow_results", ResultStreamSubjects(), opts.NatsConn)
-	resultQueue := mqManager.NewMessageQueue(resultConsumerName(opts.ClientID), "mpc.sdkflow.>")
+
+	mqManager := messaging.NewNATsMessageQueueManager(
+		resultStreamName,
+		ResultStreamSubjects(),
+		opts.NatsConn,
+	)
+	keygenResultQueue := mqManager.NewMessageQueue(keygenResultConsumerName(opts.ClientID), KeygenResultSubscriptionSubject(opts.ClientID))
+	signResultQueue := mqManager.NewMessageQueue(signResultConsumerName(opts.ClientID), SignResultSubscriptionSubject(opts.ClientID))
 
 	return &client{
-		keygenBroker: keygenBroker,
-		signBroker:   signBroker,
-		resultQueue:  resultQueue,
-		clientID:     opts.ClientID,
+		keygenBroker:      keygenBroker,
+		signBroker:        signBroker,
+		keygenResultQueue: keygenResultQueue,
+		signResultQueue:   signResultQueue,
+		natsConn:          opts.NatsConn,
+		clientID:          opts.ClientID,
 	}
 }
 
 func (c *client) Close() {
-	if c.resultQueue != nil {
-		c.resultQueue.Close()
+	if c.keygenResultQueue != nil {
+		c.keygenResultQueue.Close()
+	}
+	if c.signResultQueue != nil {
+		c.signResultQueue.Close()
 	}
 	if c.keygenBroker != nil {
 		_ = c.keygenBroker.Close()
@@ -79,16 +99,27 @@ func (c *client) CreateKeygen(req KeygenRequest) error {
 	if err := validateKeygenRequest(req); err != nil {
 		return err
 	}
-	for _, participant := range req.Session.Participants {
+	logger.Info(
+		"SDK flow client create keygen",
+		"session_id", req.Session.SessionID,
+		"wallet_id", req.Session.WalletID,
+		"participants", len(req.Session.Participants),
+	)
+
+	for _, participant := range uniqueParticipants(req.Session.Participants) {
 		localReq := req
 		localReq.Session.LocalParticipantID = participant.ID
-		payload, err := json.Marshal(localReq)
-		if err != nil {
-			return err
+		if isExternalParticipant(participant) {
+			if err := c.publishRelayRequest(participant.ID, req.Session.WalletID, OperationKeygen, req.Session.SessionID, localReq); err != nil {
+				return fmt.Errorf("publish keygen request for %s via relay: %w", participant.ID, err)
+			}
+			logger.Info("SDK flow client published keygen request via relay", "participant_id", participant.ID, "session_id", req.Session.SessionID, "wallet_id", req.Session.WalletID)
+			continue
 		}
-		if err := c.keygenBroker.PublishMessage(context.Background(), KeygenRequestSubject(participant.ID), payload, c.requestHeaders()); err != nil {
-			return fmt.Errorf("publish keygen request for %s: %w", participant.ID, err)
+		if err := c.publishDirectRequest(participant.ID, req.Session.WalletID, OperationKeygen, req.Session.SessionID, localReq); err != nil {
+			return fmt.Errorf("publish keygen request for %s via direct nats: %w", participant.ID, err)
 		}
+		logger.Info("SDK flow client published keygen request via direct nats", "participant_id", participant.ID, "session_id", req.Session.SessionID, "wallet_id", req.Session.WalletID)
 	}
 	return nil
 }
@@ -101,40 +132,58 @@ func (c *client) Sign(req SignRequest) error {
 	if err != nil {
 		return err
 	}
-	for _, participant := range recipients {
+	logger.Info(
+		"SDK flow client create sign",
+		"session_id", req.Session.SessionID,
+		"wallet_id", req.Session.WalletID,
+		"participants", len(req.Session.Participants),
+		"signers", req.SignerIndexes,
+	)
+
+	for _, participant := range uniqueParticipants(recipients) {
 		localReq := req
 		localReq.Session.LocalParticipantID = participant.ID
-		payload, err := json.Marshal(localReq)
-		if err != nil {
-			return err
+		if isExternalParticipant(participant) {
+			if err := c.publishRelayRequest(participant.ID, req.Session.WalletID, OperationSign, req.Session.SessionID, localReq); err != nil {
+				return fmt.Errorf("publish sign request for %s via relay: %w", participant.ID, err)
+			}
+			logger.Info("SDK flow client published sign request via relay", "participant_id", participant.ID, "session_id", req.Session.SessionID, "wallet_id", req.Session.WalletID)
+			continue
 		}
-		if err := c.signBroker.PublishMessage(context.Background(), SignRequestSubject(participant.ID), payload, c.requestHeaders()); err != nil {
-			return fmt.Errorf("publish sign request for %s: %w", participant.ID, err)
+		if err := c.publishDirectRequest(participant.ID, req.Session.WalletID, OperationSign, req.Session.SessionID, localReq); err != nil {
+			return fmt.Errorf("publish sign request for %s via direct nats: %w", participant.ID, err)
 		}
+		logger.Info("SDK flow client published sign request via direct nats", "participant_id", participant.ID, "session_id", req.Session.SessionID, "wallet_id", req.Session.WalletID)
 	}
 	return nil
 }
 
 func (c *client) OnKeygenResult(callback func(result KeygenResult)) error {
-	return c.resultQueue.Dequeue(KeygenResultSubscriptionSubject(c.clientID), func(message []byte) error {
-		var result KeygenResult
-		if err := json.Unmarshal(message, &result); err != nil {
-			return err
-		}
-		callback(result)
-		return nil
-	})
+	return c.keygenResultQueue.Dequeue(
+		KeygenResultSubscriptionSubject(c.clientID),
+		func(message []byte) error {
+			var result KeygenResult
+			if err := json.Unmarshal(message, &result); err != nil {
+				return err
+			}
+			callback(result)
+			return nil
+		},
+	)
 }
 
 func (c *client) OnSignResult(callback func(result SignResult)) error {
-	return c.resultQueue.Dequeue(SignResultSubscriptionSubject(c.clientID), func(message []byte) error {
-		var result SignResult
-		if err := json.Unmarshal(message, &result); err != nil {
-			return err
-		}
-		callback(result)
-		return nil
-	})
+	return c.signResultQueue.Dequeue(
+		SignResultSubscriptionSubject(c.clientID),
+		func(message []byte) error {
+			var result SignResult
+			if err := json.Unmarshal(message, &result); err != nil {
+				return err
+			}
+			callback(result)
+			return nil
+		},
+	)
 }
 
 func (c *client) requestHeaders() map[string]string {
@@ -148,19 +197,79 @@ func (c *client) requestHeaders() map[string]string {
 
 func resultConsumerName(clientID string) string {
 	if clientID == "" {
-		return "mpc_sdkflow_results"
+		return resultStreamName
 	}
-	return "mpc_sdkflow_results." + clientID
+	return resultStreamName + "." + clientID
+}
+
+func keygenResultConsumerName(clientID string) string {
+	return resultConsumerName(clientID) + ".keygen"
+}
+
+func signResultConsumerName(clientID string) string {
+	return resultConsumerName(clientID) + ".sign"
+}
+
+func (c *client) publishDirectRequest(
+	participantID, walletID string,
+	operation Operation,
+	sessionID string,
+	value any,
+) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	var broker messaging.MessageBroker
+	var subject string
+	switch operation {
+	case OperationKeygen:
+		broker = c.keygenBroker
+		subject = KeygenRequestSubject(participantID, walletID, sessionID)
+	case OperationSign:
+		broker = c.signBroker
+		subject = SignRequestSubject(participantID, walletID, sessionID)
+	default:
+		return fmt.Errorf("unsupported request operation %q", operation)
+	}
+	return broker.PublishMessage(context.Background(), subject, payload, c.requestHeaders())
+}
+
+func (c *client) publishRelayRequest(
+	participantID, walletID string,
+	operation Operation,
+	sessionID string,
+	value any,
+) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	msg := &nats.Msg{
+		Subject: relayRequestSubject(participantID, walletID, operation, sessionID),
+		Data:    payload,
+	}
+	if headers := c.requestHeaders(); len(headers) > 0 {
+		msg.Header = nats.Header{}
+		for key, value := range headers {
+			msg.Header.Set(key, value)
+		}
+	}
+	return c.natsConn.PublishMsg(msg)
 }
 
 func validateKeygenRequest(req KeygenRequest) error {
 	if strings.TrimSpace(req.Session.SessionID) == "" {
 		return fmt.Errorf("session.session_id is required")
 	}
+	if strings.TrimSpace(req.Session.WalletID) == "" {
+		return fmt.Errorf("session.wallet_id is required")
+	}
 	if len(req.Session.Participants) == 0 {
 		return fmt.Errorf("session.participants are required")
 	}
-	if strings.TrimSpace(req.Session.Protocol) == "" {
+	if strings.TrimSpace(string(req.Session.Protocol)) == "" {
 		return fmt.Errorf("session.protocol is required")
 	}
 	return nil
@@ -180,7 +289,10 @@ func validateSignRequest(req SignRequest) error {
 	return err
 }
 
-func selectedParticipants(participants []Participant, signerIndexes []uint16) ([]Participant, error) {
+func selectedParticipants(
+	participants []Participant,
+	signerIndexes []uint16,
+) ([]Participant, error) {
 	selected := make([]Participant, 0, len(signerIndexes))
 	seen := make(map[uint16]struct{}, len(signerIndexes))
 	for _, idx := range signerIndexes {
@@ -207,4 +319,38 @@ func validateClientID(clientID string) error {
 		return fmt.Errorf("client ID must be a single NATS subject token")
 	}
 	return nil
+}
+
+func uniqueParticipants(participants []Participant) []Participant {
+	unique := make([]Participant, 0, len(participants))
+	seen := make(map[string]struct{}, len(participants))
+	for _, participant := range participants {
+		id := strings.TrimSpace(participant.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, participant)
+	}
+	return unique
+}
+
+func isExternalParticipant(participant Participant) bool {
+	switch participant.ParticipantType {
+	case ParticipantServer, ParticipantMobile:
+		return true
+	default:
+		return false
+	}
+}
+
+func isInternalNodeParticipant(participant Participant) bool {
+	return !isExternalParticipant(participant)
+}
+
+func hasInternalNodeParticipants(participants []Participant) bool {
+	return slices.ContainsFunc(participants, isInternalNodeParticipant)
 }

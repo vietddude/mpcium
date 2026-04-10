@@ -37,9 +37,10 @@ func TestTopicMapperRejectsInvalidShapes(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestTopicMapperRejectsCosignerMismatch(t *testing.T) {
+func TestTopicMapperAllowsTargetMailboxDifferentFromAuthenticatedCosigner(t *testing.T) {
 	mapper := NewTopicMapper()
 
-	_, err := mapper.MQTTToNATS(MQTTTopic("cosigner-2", "wallet-1", "keygen"), "cosigner-1")
-	require.ErrorIs(t, err, ErrCosignerMismatch)
+	inbound, err := mapper.MQTTToNATS(MQTTTopic("cosigner-2", "wallet-1", "keygen"), "cosigner-1")
+	require.NoError(t, err)
+	assert.Equal(t, InboundNATSSubject("cosigner-2", "wallet-1", "keygen"), inbound)
 }

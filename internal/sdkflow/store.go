@@ -18,16 +18,16 @@ func NewStore(root string) *Store {
 	}
 }
 
-func (s *Store) SaveShare(protocol, keyID string, blob []byte) (string, error) {
-	ref, err := shareRef(protocol, keyID)
+func (s *Store) SaveShare(protocol, walletID string, blob []byte) (string, error) {
+	ref, err := shareRef(protocol, walletID)
 	if err != nil {
 		return "", err
 	}
 	return ref, s.blobStore.Save(ref, blob)
 }
 
-func (s *Store) LoadShare(protocol, keyID string) ([]byte, string, error) {
-	ref, err := shareRef(protocol, keyID)
+func (s *Store) LoadShare(protocol, walletID string) ([]byte, string, error) {
+	ref, err := shareRef(protocol, walletID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -38,14 +38,14 @@ func (s *Store) LoadShare(protocol, keyID string) ([]byte, string, error) {
 	return blob, ref, nil
 }
 
-func shareRef(protocol, keyID string) (string, error) {
+func shareRef(protocol, walletID string) (string, error) {
 	protocol = strings.ToLower(strings.TrimSpace(protocol))
-	keyID = strings.TrimSpace(keyID)
+	walletID = strings.TrimSpace(walletID)
 	if protocol == "" {
 		return "", fmt.Errorf("protocol is required")
 	}
-	if keyID == "" {
-		return "", fmt.Errorf("key_id is required")
+	if walletID == "" {
+		return "", fmt.Errorf("wallet_id is required")
 	}
-	return filepath.ToSlash(filepath.Join("shares", protocol, keyID+".json")), nil
+	return filepath.ToSlash(filepath.Join("shares", protocol, walletID+".json")), nil
 }
