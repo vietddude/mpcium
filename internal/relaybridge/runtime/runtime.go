@@ -59,6 +59,8 @@ func New(ctx context.Context, cfg rbconfig.Config) (*Runtime, error) {
 		return nil, err
 	}
 
+	keygenConcurrency := effectiveKeygenConcurrency(cfg)
+
 	nc, err := connectNATS(cfg.NATS)
 	if err != nil {
 		return nil, err
@@ -86,7 +88,11 @@ func New(ctx context.Context, cfg rbconfig.Config) (*Runtime, error) {
 		nc,
 		routing.KeygenRequestStream,
 		[]string{routing.KeygenRequestTopic()},
-		messaging.WithMaxAckPending(maxOrDefault(cfg.Consumer.MaxConcurrentKeygen, 2)),
+		// Keygen sessions must start in the same order on every participant.
+		// Allowing multiple in-flight deliveries per node causes per-node skew:
+		// one node may enter session N while another is still blocked on N-1,
+		// which then times out in the peer-ready barrier.
+		messaging.WithMaxAckPending(keygenConcurrency),
 	)
 	if err != nil {
 		_ = shareStore.Close()
@@ -124,7 +130,7 @@ func New(ctx context.Context, cfg rbconfig.Config) (*Runtime, error) {
 		signBroker:    signBroker,
 		resultJS:      resultJS,
 		activeRuns:    make(map[string]struct{}),
-		keygenGate:    make(chan struct{}, 1),
+		keygenGate:    make(chan struct{}, keygenConcurrency),
 	}, nil
 }
 
@@ -211,7 +217,7 @@ func (r *Runtime) handleKeygen(msg jetstream.Msg) {
 		_ = msg.Ack()
 		return
 	}
-	if !shouldHandleParticipants(req.Session.Participants, r.cfg.Runtime.ParticipantID) {
+	if !rbtypes.ContainsParticipantID(req.Session.Participants, r.cfg.Runtime.ParticipantID) {
 		_ = msg.Ack()
 		return
 	}
@@ -248,7 +254,7 @@ func (r *Runtime) handleKeygen(msg jetstream.Msg) {
 		return
 	}
 
-	if shouldReportParticipants(req.Session.Participants, r.cfg.Runtime.ParticipantID) {
+	if rbtypes.PreferredReporter(req.Session.Participants) == r.cfg.Runtime.ParticipantID {
 		if err := r.publishKeygenResult(msg, *result); err != nil {
 			logger.Error("Failed to publish relaybridge keygen result", err)
 			_ = msg.Nak()
@@ -280,13 +286,13 @@ func (r *Runtime) handleSign(msg jetstream.Msg) {
 		return
 	}
 
-	recipients, err := selectedParticipants(req.Session.Participants, req.SignerIndexes)
+	recipients, err := rbtypes.SelectedParticipants(req.Session.Participants, req.SignerIndexes)
 	if err != nil {
 		r.publishSignError(msg, req, err)
 		_ = msg.Ack()
 		return
 	}
-	if !shouldHandleParticipants(recipients, r.cfg.Runtime.ParticipantID) {
+	if !rbtypes.ContainsParticipantID(recipients, r.cfg.Runtime.ParticipantID) {
 		_ = msg.Ack()
 		return
 	}
@@ -321,7 +327,7 @@ func (r *Runtime) handleSign(msg jetstream.Msg) {
 		return
 	}
 
-	if shouldReportParticipants(recipients, r.cfg.Runtime.ParticipantID) {
+	if rbtypes.PreferredReporter(recipients) == r.cfg.Runtime.ParticipantID {
 		if err := r.publishSignResult(msg, *result); err != nil {
 			logger.Error("Failed to publish relaybridge sign result", err)
 			_ = msg.Nak()
@@ -401,47 +407,6 @@ func applyRequestTarget(session *rbtypes.SessionContext, target routing.RequestT
 	return nil
 }
 
-func shouldHandleParticipants(participants []rbtypes.Participant, participantID string) bool {
-	for _, participant := range participants {
-		if participant.ID == participantID {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldReportParticipants(participants []rbtypes.Participant, participantID string) bool {
-	return preferredReporter(participants) == participantID
-}
-
-func preferredReporter(participants []rbtypes.Participant) string {
-	if len(participants) == 0 {
-		return ""
-	}
-	for _, participant := range participants {
-		if participant.ParticipantType == rbtypes.ParticipantNode || participant.ParticipantType == "" {
-			return participant.ID
-		}
-	}
-	return participants[0].ID
-}
-
-func selectedParticipants(participants []rbtypes.Participant, signerIndexes []uint16) ([]rbtypes.Participant, error) {
-	selected := make([]rbtypes.Participant, 0, len(signerIndexes))
-	seen := make(map[uint16]struct{}, len(signerIndexes))
-	for _, idx := range signerIndexes {
-		if _, ok := seen[idx]; ok {
-			continue
-		}
-		seen[idx] = struct{}{}
-		if int(idx) >= len(participants) {
-			return nil, fmt.Errorf("signer index %d out of range", idx)
-		}
-		selected = append(selected, participants[idx])
-	}
-	return selected, nil
-}
-
 func newResultJetStream(nc *nats.Conn) (jetstream.JetStream, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -493,6 +458,22 @@ func maxOrDefault(value, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+func effectiveKeygenConcurrency(cfg rbconfig.Config) int {
+	if cfg.Consumer.MaxConcurrentKeygen <= 0 {
+		return 1
+	}
+	if cfg.Consumer.MaxConcurrentKeygen > 1 {
+		logger.Warn(
+			"relaybridge keygen concurrency above 1 is not supported safely; forcing serialized keygen consumption",
+			"configured", cfg.Consumer.MaxConcurrentKeygen,
+			"effective", 1,
+			"participant_id", cfg.Runtime.ParticipantID,
+		)
+		return 1
+	}
+	return cfg.Consumer.MaxConcurrentKeygen
 }
 
 func sessionRunKey(session rbtypes.SessionContext) string {

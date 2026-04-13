@@ -208,6 +208,21 @@ func TestRuntimeDuplicateKeygenDeliveryDoesNotSpawnDuplicateRunner(t *testing.T)
 	require.ErrorIs(t, err, nats.ErrTimeout)
 }
 
+func TestEffectiveKeygenConcurrencyIsSerialized(t *testing.T) {
+	cfg := rbconfig.Config{
+		Runtime: rbconfig.RuntimeConfig{
+			ParticipantID: "node0",
+		},
+	}
+	assert.Equal(t, 1, effectiveKeygenConcurrency(cfg))
+
+	cfg.Consumer.MaxConcurrentKeygen = 1
+	assert.Equal(t, 1, effectiveKeygenConcurrency(cfg))
+
+	cfg.Consumer.MaxConcurrentKeygen = 3
+	assert.Equal(t, 1, effectiveKeygenConcurrency(cfg))
+}
+
 func testConfig(t *testing.T, natsURL, participantID, preparamsPath string) rbconfig.Config {
 	t.Helper()
 	return rbconfig.Config{

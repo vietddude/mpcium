@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	rbclient "github.com/fystack/mpcium/internal/relaybridge/client"
@@ -104,7 +103,7 @@ func runKeygen(client rbclient.Client, req *rbtypes.KeygenRequest, batch BatchCo
 		return
 	}
 
-	sendKeygenBatch(client, requests, batch)
+	sendKeygenBatchSequentially(client, requests)
 	collectKeygenBatchResults(requests, wait, timeout)
 }
 
@@ -135,7 +134,7 @@ func runSign(client rbclient.Client, req *rbtypes.SignRequest, batch BatchConfig
 		return
 	}
 
-	sendSignBatch(client, requests, batch)
+	sendSignBatchSequentially(client, requests)
 	collectSignBatchResults(requests, wait, timeout)
 }
 
@@ -213,27 +212,25 @@ func inferWalletPrefix(baseWalletID string) string {
 	return baseWalletID[:end]
 }
 
-func sendKeygenBatch(client rbclient.Client, requests []rbtypes.KeygenRequest, batch BatchConfig) {
-	runWithConcurrency(len(requests), batch.Concurrency, func(i int) {
-		req := requests[i]
+func sendKeygenBatchSequentially(client rbclient.Client, requests []rbtypes.KeygenRequest) {
+	for _, req := range requests {
 		logSession("keygen", req.Session)
 		if err := client.CreateKeygen(req); err != nil {
 			exitf("create keygen wallet_id=%s session_id=%s: %v", req.Session.WalletID, req.Session.SessionID, err)
 		}
 		fmt.Printf("sent keygen request session_id=%s wallet_id=%s\n", req.Session.SessionID, req.Session.WalletID)
-	})
+	}
 }
 
-func sendSignBatch(client rbclient.Client, requests []rbtypes.SignRequest, batch BatchConfig) {
-	runWithConcurrency(len(requests), batch.Concurrency, func(i int) {
-		req := requests[i]
+func sendSignBatchSequentially(client rbclient.Client, requests []rbtypes.SignRequest) {
+	for _, req := range requests {
 		logSession("sign", req.Session)
 		fmt.Printf("signer_indexes=%v message_digest_len=%d\n", req.SignerIndexes, len(req.MessageDigestHex))
 		if err := client.Sign(req); err != nil {
 			exitf("sign wallet_id=%s session_id=%s: %v", req.Session.WalletID, req.Session.SessionID, err)
 		}
 		fmt.Printf("sent sign request session_id=%s wallet_id=%s signers=%v\n", req.Session.SessionID, req.Session.WalletID, req.SignerIndexes)
-	})
+	}
 }
 
 func collectKeygenBatchResults(requests []rbtypes.KeygenRequest, wait <-chan rbtypes.KeygenResult, timeout time.Duration) {
@@ -243,7 +240,10 @@ func collectKeygenBatchResults(requests []rbtypes.KeygenRequest, wait <-chan rbt
 	}
 	deadline := time.After(timeout)
 	results := make([]rbtypes.KeygenResult, 0, len(requests))
-	for len(pending) > 0 {
+	for {
+		if len(pending) == 0 {
+			break
+		}
 		select {
 		case result := <-wait:
 			if _, ok := pending[result.SessionID]; !ok {
@@ -265,7 +265,10 @@ func collectSignBatchResults(requests []rbtypes.SignRequest, wait <-chan rbtypes
 	}
 	deadline := time.After(timeout)
 	results := make([]rbtypes.SignResult, 0, len(requests))
-	for len(pending) > 0 {
+	for {
+		if len(pending) == 0 {
+			break
+		}
 		select {
 		case result := <-wait:
 			if _, ok := pending[result.SessionID]; !ok {
@@ -278,24 +281,6 @@ func collectSignBatchResults(requests []rbtypes.SignRequest, wait <-chan rbtypes
 		}
 	}
 	printJSON(results)
-}
-
-func runWithConcurrency(total, concurrency int, fn func(i int)) {
-	if concurrency <= 0 || concurrency > total {
-		concurrency = total
-	}
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	for i := 0; i < total; i++ {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			fn(idx)
-		}(i)
-	}
-	wg.Wait()
 }
 
 func printJSON(value any) {

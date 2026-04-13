@@ -107,7 +107,7 @@ func (c *client) CreateKeygen(req rbtypes.KeygenRequest) error {
 		"participants", len(req.Session.Participants),
 	)
 	return c.publishRequests(
-		uniqueParticipants(req.Session.Participants),
+		rbtypes.UniqueParticipants(req.Session.Participants),
 		req.Session.WalletID,
 		req.Session.Protocol,
 		rbtypes.OperationKeygen,
@@ -124,7 +124,7 @@ func (c *client) Sign(req rbtypes.SignRequest) error {
 	if err := validateSignRequest(req); err != nil {
 		return err
 	}
-	recipients, err := selectedParticipants(req.Session.Participants, req.SignerIndexes)
+	recipients, err := rbtypes.SelectedParticipants(req.Session.Participants, req.SignerIndexes)
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func (c *client) Sign(req rbtypes.SignRequest) error {
 		"signers", req.SignerIndexes,
 	)
 	return c.publishRequests(
-		uniqueParticipants(recipients),
+		rbtypes.UniqueParticipants(recipients),
 		req.Session.WalletID,
 		req.Session.Protocol,
 		rbtypes.OperationSign,
@@ -320,24 +320,8 @@ func validateSignRequest(req rbtypes.SignRequest) error {
 	if strings.TrimSpace(req.MessageDigestHex) == "" {
 		return fmt.Errorf("message_digest_hex is required")
 	}
-	_, err := selectedParticipants(req.Session.Participants, req.SignerIndexes)
+	_, err := rbtypes.SelectedParticipants(req.Session.Participants, req.SignerIndexes)
 	return err
-}
-
-func selectedParticipants(participants []rbtypes.Participant, signerIndexes []uint16) ([]rbtypes.Participant, error) {
-	selected := make([]rbtypes.Participant, 0, len(signerIndexes))
-	seen := make(map[uint16]struct{}, len(signerIndexes))
-	for _, idx := range signerIndexes {
-		if _, ok := seen[idx]; ok {
-			continue
-		}
-		seen[idx] = struct{}{}
-		if int(idx) >= len(participants) {
-			return nil, fmt.Errorf("signer index %d out of range", idx)
-		}
-		selected = append(selected, participants[idx])
-	}
-	return selected, nil
 }
 
 func validateClientID(clientID string) error {
@@ -351,23 +335,6 @@ func validateClientID(clientID string) error {
 		return fmt.Errorf("client ID must be a single NATS subject token")
 	}
 	return nil
-}
-
-func uniqueParticipants(participants []rbtypes.Participant) []rbtypes.Participant {
-	unique := make([]rbtypes.Participant, 0, len(participants))
-	seen := make(map[string]struct{}, len(participants))
-	for _, participant := range participants {
-		id := strings.TrimSpace(participant.ID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		unique = append(unique, participant)
-	}
-	return unique
 }
 
 func isExternalParticipant(participant rbtypes.Participant) bool {
