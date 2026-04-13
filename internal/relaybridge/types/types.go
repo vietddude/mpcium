@@ -1,4 +1,4 @@
-package sdkflow
+package types
 
 import "github.com/fystack/mpcium/pkg/event"
 

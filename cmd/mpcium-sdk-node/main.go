@@ -7,7 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/fystack/mpcium/internal/sdkflow"
+	rbconfig "github.com/fystack/mpcium/internal/relaybridge/config"
+	rbruntime "github.com/fystack/mpcium/internal/relaybridge/runtime"
 	"github.com/fystack/mpcium/pkg/logger"
 	"github.com/spf13/viper"
 	"github.com/urfave/cli/v3"
@@ -51,7 +52,7 @@ func run(_ context.Context, c *cli.Command) error {
 		return err
 	}
 
-	var cfg sdkflow.Config
+	var cfg rbconfig.Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return err
 	}
@@ -61,7 +62,7 @@ func run(_ context.Context, c *cli.Command) error {
 
 	logger.Init(cfg.Environment, c.Bool("debug"))
 
-	runtime, err := sdkflow.NewRuntime(context.Background(), cfg)
+	runtime, err := rbruntime.New(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
@@ -70,5 +71,5 @@ func run(_ context.Context, c *cli.Command) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	return runtime.Start(ctx)
+	return runtime.Run(ctx)
 }

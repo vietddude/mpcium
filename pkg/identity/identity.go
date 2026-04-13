@@ -23,6 +23,7 @@ import (
 	"github.com/fystack/mpcium/pkg/logger"
 	"github.com/fystack/mpcium/pkg/security"
 	"github.com/fystack/mpcium/pkg/types"
+	"github.com/fystack/mpcium-sdk/securecrypto"
 	"github.com/spf13/viper"
 )
 
@@ -195,6 +196,42 @@ func NewFileStore(identityDir, nodeName string, decrypt bool, agePasswordFile st
 	}
 
 	return store, nil
+}
+
+func LoadSecureIdentityKeyPair(
+	identityDir string,
+	nodeName string,
+	decrypt bool,
+	agePasswordFile string,
+) (securecrypto.IdentityKeyPair, error) {
+	identityFilePath, err := pathutil.SafePath(identityDir, fmt.Sprintf("%s_identity.json", nodeName))
+	if err != nil {
+		return securecrypto.IdentityKeyPair{}, fmt.Errorf("invalid identity file path for node %s: %w", nodeName, err)
+	}
+	data, err := os.ReadFile(identityFilePath)
+	if err != nil {
+		return securecrypto.IdentityKeyPair{}, fmt.Errorf("failed to read identity file for %s: %w", nodeName, err)
+	}
+	var record NodeIdentity
+	if err := json.Unmarshal(data, &record); err != nil {
+		return securecrypto.IdentityKeyPair{}, fmt.Errorf("failed to parse identity file for %s: %w", nodeName, err)
+	}
+	publicKey, err := hex.DecodeString(strings.TrimSpace(record.PublicKey))
+	if err != nil {
+		return securecrypto.IdentityKeyPair{}, fmt.Errorf("invalid public key format for %s: %w", nodeName, err)
+	}
+	privateKeyHex, err := loadPrivateKey(identityDir, nodeName, decrypt, agePasswordFile)
+	if err != nil {
+		return securecrypto.IdentityKeyPair{}, err
+	}
+	privateKey, err := hex.DecodeString(strings.TrimSpace(privateKeyHex))
+	if err != nil {
+		return securecrypto.IdentityKeyPair{}, fmt.Errorf("invalid private key format for %s: %w", nodeName, err)
+	}
+	return securecrypto.IdentityKeyPair{
+		PublicKey:  publicKey,
+		PrivateKey: privateKey,
+	}, nil
 }
 
 func loadInitiatorKeys() (*InitiatorKey, error) {

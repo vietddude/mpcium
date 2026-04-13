@@ -1,0 +1,23 @@
+environment: development
+
+nats:
+  url: nats://127.0.0.1:4222
+  username: ""
+  password: ""
+
+runtime:
+  participant_id: node1
+  identity_ref: node1
+  identity_store_dir: ./node1/relaybridge
+  peer_ready_timeout: 10s
+  peer_ready_interval: 300ms
+  ecdsa_preparams_path: ./node1/preparams.json
+  request_timeout: 45s
+
+storage:
+  root_dir: ./node1/relaybridge-state
+  age_passphrase: change-me
+
+consumer:
+  max_concurrent_keygen: 2
+  max_concurrent_sign: 4

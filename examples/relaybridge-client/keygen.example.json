@@ -1,0 +1,27 @@
+{
+  "batch": {
+    "count": 1,
+    "wallet_prefix": "wallet-load-",
+    "wallet_start": 6,
+    "concurrency": 5
+  },
+  "keygen": {
+    "session": {
+      "wallet_id": "wallet-load-1",
+      "protocol": "ecdsa",
+      "threshold": 1,
+      "participants": [
+        {
+          "id": "node0",
+          "participant_type": "node",
+          "identity_public_key_hex": "12af401ed6929bca9be4701cacf4564f536918998760232175428ea99ada66ff"
+        },
+        {
+          "id": "node1",
+          "participant_type": "node",
+          "identity_public_key_hex": "a16d2094277b5e3a788989acd931f2134ccd29c22c7af1ecefcc3e570599062b"
+        }
+      ]
+    }
+  }
+}
