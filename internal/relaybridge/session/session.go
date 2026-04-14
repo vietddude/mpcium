@@ -336,6 +336,19 @@ func (r *Runner) handleEnvelope(env protocol.Envelope) (*mpcore.Result, error) {
 		env.Session.WalletID != r.resolved.Session.WalletID ||
 		env.Session.Protocol != r.cfg.Protocol.String() ||
 		env.Session.Operation != r.cfg.Operation.String() {
+		logger.Info(
+			"mpcium-relaybridge ignore session envelope due metadata mismatch",
+			"participant_id", r.resolved.Session.LocalParticipantID,
+			"from_peer", env.Session.SenderID,
+			"expected_session_id", r.cfg.SessionID,
+			"got_session_id", env.Session.SessionID,
+			"expected_wallet_id", r.resolved.Session.WalletID,
+			"got_wallet_id", env.Session.WalletID,
+			"expected_protocol", r.cfg.Protocol.String(),
+			"got_protocol", env.Session.Protocol,
+			"expected_operation", r.cfg.Operation.String(),
+			"got_operation", env.Session.Operation,
+		)
 		return nil, nil
 	}
 	firstReady := r.markPeerReady(env.Session.SenderID)
@@ -359,6 +372,14 @@ func (r *Runner) handleEnvelope(env protocol.Envelope) (*mpcore.Result, error) {
 		return nil, nil
 	}
 	logger.Debug(
+		"mpcium-relaybridge accepted secure envelope",
+		"participant_id", r.resolved.Session.LocalParticipantID,
+		"from_peer", env.Session.SenderID,
+		"session_id", r.cfg.SessionID,
+		"wallet_id", r.resolved.Session.WalletID,
+		"message_type", env.Session.Message.Type,
+	)
+	logger.Debug(
 		"mpcium-relaybridge apply secure message",
 		"participant_id", r.resolved.Session.LocalParticipantID,
 		"from_peer", env.Session.SenderID,
@@ -377,25 +398,21 @@ func (r *Runner) handleEnvelope(env protocol.Envelope) (*mpcore.Result, error) {
 }
 
 func (r *Runner) recipientsForMessage(message secure.Message) ([]string, error) {
-	switch message.Type {
-	case secure.MessageTypeSignedBroadcast:
-		return r.peerIDsExceptSelf(), nil
-	case secure.MessageTypeEncryptedDirect:
-		if message.EncryptedDirect == nil || len(message.EncryptedDirect.Message.RecipientIndexes) != 1 {
-			return nil, fmt.Errorf("encrypted direct message must have exactly one recipient")
-		}
-		index := message.EncryptedDirect.Message.RecipientIndexes[0]
-		if int(index) >= len(r.resolved.Participants) {
-			return nil, fmt.Errorf("recipient index %d out of range", index)
-		}
-		recipientID := r.resolved.Participants[index].ID
-		if recipientID == r.resolved.Session.LocalParticipantID {
-			return nil, nil
-		}
-		return []string{recipientID}, nil
-	default:
-		return nil, fmt.Errorf("unsupported secure message type %q", message.Type)
+	recipients, err := r.session.RecipientIDs(message)
+	if err != nil {
+		return nil, err
 	}
+	for _, recipientID := range recipients {
+		if recipientID != r.resolved.Session.LocalParticipantID {
+			continue
+		}
+		return nil, fmt.Errorf(
+			"secure session produced local recipient %q for message type %q",
+			r.resolved.Session.LocalParticipantID,
+			message.Type,
+		)
+	}
+	return recipients, nil
 }
 
 func (r *Runner) peerIDsExceptSelf() []string {
