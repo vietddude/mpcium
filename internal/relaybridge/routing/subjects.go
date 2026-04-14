@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fystack/mpcium/internal/relay"
+	relayprotocol "github.com/fystack/mpcium/internal/relay/protocol"
 	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
 )
 
@@ -145,7 +145,7 @@ func DirectSessionSubject(participantID, walletID string, protocol rbtypes.Proto
 // coming back from the relay/cosigner side:
 // mpc.relay.from_cosigner.<participant_id>.<wallet_id>.<protocol>.<operation>.<session_id>.relaybridge
 func RelayInboundSessionSubject(participantID, walletID string, protocol rbtypes.Protocol, operation rbtypes.Operation, sessionID string) string {
-	return relay.InboundNATSSubject(
+	return relayprotocol.InboundNATSSubject(
 		strings.TrimSpace(participantID),
 		strings.TrimSpace(walletID),
 		string(protocol),
@@ -159,7 +159,7 @@ func RelayInboundSessionSubject(participantID, walletID string, protocol rbtypes
 // destined for an external cosigner through the relay:
 // mpc.relay.to_cosigner.<participant_id>.<wallet_id>.<protocol>.<operation>.<session_id>.relaybridge
 func RelayOutboundSessionSubject(participantID, walletID string, protocol rbtypes.Protocol, operation rbtypes.Operation, sessionID string) string {
-	return relay.OutboundNATSSubject(
+	return relayprotocol.OutboundNATSSubject(
 		strings.TrimSpace(participantID),
 		strings.TrimSpace(walletID),
 		string(protocol),
@@ -195,7 +195,7 @@ func ParseDirectRequestSubject(subject string) (RequestTarget, error) {
 // mpc.relay.from_cosigner.<participant_id>.<wallet_id>.req.<protocol>.<operation>.<session_id>
 func ParseRelayRequestSubject(subject string) (RequestTarget, error) {
 	parts := strings.Split(subject, ".")
-	if len(parts) != 9 || strings.Join(parts[:3], ".") != relay.InboundNATSSubjectPrefix {
+	if len(parts) != 9 || strings.Join(parts[:3], ".") != relayprotocol.InboundNATSSubjectPrefix {
 		return RequestTarget{}, fmt.Errorf("invalid relaybridge relay request subject %q", subject)
 	}
 	if parts[5] != relayRequestTailPrefix {
@@ -247,7 +247,7 @@ func directRequestTopic(operation rbtypes.Operation) string {
 }
 
 func relayRequestSubject(participantID, walletID string, protocol rbtypes.Protocol, operation rbtypes.Operation, sessionID string) string {
-	return relay.OutboundNATSSubject(
+	return relayprotocol.OutboundNATSSubject(
 		strings.TrimSpace(participantID),
 		strings.TrimSpace(walletID),
 		relayRequestTailPrefix,

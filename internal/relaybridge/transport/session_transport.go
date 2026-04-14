@@ -10,7 +10,7 @@ import (
 	"github.com/fystack/mpcium-sdk/mpcore"
 	"github.com/fystack/mpcium-sdk/protocol"
 	"github.com/fystack/mpcium-sdk/secure"
-	"github.com/fystack/mpcium/internal/relay"
+	relayprotocol "github.com/fystack/mpcium/internal/relay/protocol"
 	"github.com/nats-io/nats.go"
 )
 
@@ -176,8 +176,8 @@ type relayBridgeEnvelopeCodec struct{}
 // Everything else is treated as direct internal NATS traffic and uses raw envelope JSON.
 func sessionCodecForSubject(subject string) sessionEnvelopeCodec {
 	switch {
-	case strings.HasPrefix(subject, relay.OutboundNATSSubjectPrefix+"."),
-		strings.HasPrefix(subject, relay.InboundNATSSubjectPrefix+"."):
+	case strings.HasPrefix(subject, relayprotocol.OutboundNATSSubjectPrefix+"."),
+		strings.HasPrefix(subject, relayprotocol.InboundNATSSubjectPrefix+"."):
 		return relayBridgeEnvelopeCodec{}
 	default:
 		return directSessionEnvelopeCodec{}

@@ -8,7 +8,7 @@ import (
 	"github.com/fystack/mpcium-sdk/mpcore"
 	"github.com/fystack/mpcium-sdk/protocol"
 	"github.com/fystack/mpcium-sdk/secure"
-	"github.com/fystack/mpcium/internal/relay"
+	relayprotocol "github.com/fystack/mpcium/internal/relay/protocol"
 	routing "github.com/fystack/mpcium/internal/relaybridge/routing"
 	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -83,7 +83,7 @@ func TestNATSSessionEnvelopeTransportRelayCompatibility(t *testing.T) {
 	t.Cleanup(nc.Close)
 
 	transport := NewNATS(nc)
-	outboundSubject := relay.OutboundNATSSubject("cosigner-1", "wallet-1", "ecdsa", "keygen", "session-1", "relaybridge")
+	outboundSubject := relayprotocol.OutboundNATSSubject("cosigner-1", "wallet-1", "ecdsa", "keygen", "session-1", "relaybridge")
 
 	rawSub, err := nc.SubscribeSync(outboundSubject)
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestNATSSessionEnvelopeTransportRelayCompatibility(t *testing.T) {
 	assert.Equal(t, envelope.Session.SenderID, bridge.SenderID)
 	assert.Equal(t, envelope.Session.Message.Type, bridge.Message.Type)
 
-	inboundSubject := relay.InboundNATSSubject("cosigner-1", "wallet-1", "ecdsa", "keygen", "session-2", "relaybridge")
+	inboundSubject := relayprotocol.InboundNATSSubject("cosigner-1", "wallet-1", "ecdsa", "keygen", "session-2", "relaybridge")
 	sub, err := transport.Subscribe([]string{inboundSubject})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Close() })

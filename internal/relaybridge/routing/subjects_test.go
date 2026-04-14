@@ -3,7 +3,7 @@ package routing
 import (
 	"testing"
 
-	"github.com/fystack/mpcium/internal/relay"
+	"github.com/fystack/mpcium/internal/relay/protocol"
 	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,12 +25,12 @@ func TestDirectRequestSubjects(t *testing.T) {
 func TestRelayRequestSubjects(t *testing.T) {
 	assert.Equal(
 		t,
-		relay.OutboundNATSSubject("node0", "wallet-1", "req", "ecdsa", "keygen", "session-1"),
+		protocol.OutboundNATSSubject("node0", "wallet-1", "req", "ecdsa", "keygen", "session-1"),
 		KeygenRelayRequestSubject("node0", "wallet-1", rbtypes.ProtocolECDSA, "session-1"),
 	)
 	assert.Equal(
 		t,
-		relay.OutboundNATSSubject("node0", "wallet-1", "req", "eddsa", "sign", "session-2"),
+		protocol.OutboundNATSSubject("node0", "wallet-1", "req", "eddsa", "sign", "session-2"),
 		SignRelayRequestSubject("node0", "wallet-1", rbtypes.ProtocolEdDSA, "session-2"),
 	)
 }
@@ -54,7 +54,7 @@ func TestParseDirectRequestSubject(t *testing.T) {
 }
 
 func TestParseRelayRequestSubject(t *testing.T) {
-	target, err := ParseRelayRequestSubject(relay.InboundNATSSubject("node0", "wallet-1", "req", "ecdsa", "sign", "session-1"))
+	target, err := ParseRelayRequestSubject(protocol.InboundNATSSubject("node0", "wallet-1", "req", "ecdsa", "sign", "session-1"))
 	require.NoError(t, err)
 	assert.Equal(t, "node0", target.ParticipantID)
 	assert.Equal(t, "wallet-1", target.WalletID)

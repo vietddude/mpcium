@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/fystack/mpcium/internal/relay"
+	relayruntime "github.com/fystack/mpcium/internal/relay/runtime"
 	"github.com/fystack/mpcium/pkg/config"
 	"github.com/fystack/mpcium/pkg/logger"
 	"github.com/spf13/viper"
@@ -57,7 +57,7 @@ func runRelay(_ context.Context, c *cli.Command) error {
 	relayConfig := config.LoadRelayConfig()
 	logger.Info("Loaded relay config", "config", relayConfig.MarshalJSONMask())
 
-	runtime, err := relay.NewRuntime(relayConfig)
+	runtime, err := relayruntime.New(relayConfig)
 	if err != nil {
 		return err
 	}
