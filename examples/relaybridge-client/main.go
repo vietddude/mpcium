@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,16 +18,8 @@ type ExampleConfig struct {
 	NATSURL  string                 `json:"nats_url"`
 	ClientID string                 `json:"client_id"`
 	Timeout  string                 `json:"timeout"`
-	Batch    BatchConfig            `json:"batch,omitempty"`
 	Keygen   *rbtypes.KeygenRequest `json:"keygen,omitempty"`
 	Sign     *rbtypes.SignRequest   `json:"sign,omitempty"`
-}
-
-type BatchConfig struct {
-	Count        int    `json:"count,omitempty"`
-	WalletPrefix string `json:"wallet_prefix,omitempty"`
-	WalletStart  int    `json:"wallet_start,omitempty"`
-	Concurrency  int    `json:"concurrency,omitempty"`
 }
 
 func main() {
@@ -43,14 +34,12 @@ func main() {
 	if err != nil {
 		exitf("load config: %v", err)
 	}
-	fmt.Printf("loaded config path=%s nats_url=%s client_id=%s timeout=%s\n", *configPath, cfg.NATSURL, cfg.ClientID, cfg.Timeout)
 
 	nc, err := nats.Connect(cfg.NATSURL)
 	if err != nil {
 		exitf("connect nats: %v", err)
 	}
 	defer nc.Close()
-	fmt.Printf("connected to nats url=%s\n", cfg.NATSURL)
 
 	client := rbclient.New(rbclient.Options{
 		NATSConn: nc,
@@ -58,84 +47,19 @@ func main() {
 	})
 	defer client.Close()
 
-	timeout := 60 * time.Second
-	if cfg.Timeout != "" {
-		parsed, err := time.ParseDuration(cfg.Timeout)
-		if err != nil {
-			exitf("invalid timeout: %v", err)
-		}
-		timeout = parsed
+	timeout, err := time.ParseDuration(cfg.Timeout)
+	if err != nil {
+		exitf("invalid timeout: %v", err)
 	}
 
 	switch {
 	case cfg.Keygen != nil:
-		runKeygen(client, cfg.Keygen, cfg.Batch, timeout)
+		runKeygen(client, cfg.Keygen, timeout)
 	case cfg.Sign != nil:
-		runSign(client, cfg.Sign, cfg.Batch, timeout)
+		runSign(client, cfg.Sign, timeout)
 	default:
 		exitf("config must contain either keygen or sign")
 	}
-}
-
-func runKeygen(client rbclient.Client, req *rbtypes.KeygenRequest, batch BatchConfig, timeout time.Duration) {
-	requests := buildKeygenRequests(*req, batch)
-	wait := make(chan rbtypes.KeygenResult, len(requests))
-	if err := client.OnKeygenResult(func(result rbtypes.KeygenResult) {
-		fmt.Printf("received keygen callback session_id=%s result_type=%s\n", result.SessionID, result.ResultType)
-		wait <- result
-	}); err != nil {
-		exitf("subscribe keygen result: %v", err)
-	}
-	fmt.Printf("subscribed keygen result requests=%d listener ready\n", len(requests))
-
-	if len(requests) == 1 {
-		logSession("keygen", requests[0].Session)
-		if err := client.CreateKeygen(requests[0]); err != nil {
-			exitf("create keygen: %v", err)
-		}
-		fmt.Printf("sent keygen request session_id=%s wallet_id=%s\n", requests[0].Session.SessionID, requests[0].Session.WalletID)
-		select {
-		case result := <-wait:
-			printJSON(result)
-		case <-time.After(timeout):
-			exitf("timed out waiting for keygen result")
-		}
-		return
-	}
-
-	sendKeygenBatchSequentially(client, requests)
-	collectKeygenBatchResults(requests, wait, timeout)
-}
-
-func runSign(client rbclient.Client, req *rbtypes.SignRequest, batch BatchConfig, timeout time.Duration) {
-	requests := buildSignRequests(*req, batch)
-	wait := make(chan rbtypes.SignResult, len(requests))
-	if err := client.OnSignResult(func(result rbtypes.SignResult) {
-		fmt.Printf("received sign callback session_id=%s result_type=%s\n", result.SessionID, result.ResultType)
-		wait <- result
-	}); err != nil {
-		exitf("subscribe sign result: %v", err)
-	}
-	fmt.Printf("subscribed sign result requests=%d listener ready\n", len(requests))
-
-	if len(requests) == 1 {
-		logSession("sign", requests[0].Session)
-		fmt.Printf("signer_indexes=%v message_digest_len=%d\n", requests[0].SignerIndexes, len(requests[0].MessageDigestHex))
-		if err := client.Sign(requests[0]); err != nil {
-			exitf("sign: %v", err)
-		}
-		fmt.Printf("sent sign request session_id=%s wallet_id=%s signers=%v\n", requests[0].Session.SessionID, requests[0].Session.WalletID, requests[0].SignerIndexes)
-		select {
-		case result := <-wait:
-			printJSON(result)
-		case <-time.After(timeout):
-			exitf("timed out waiting for sign result")
-		}
-		return
-	}
-
-	sendSignBatchSequentially(client, requests)
-	collectSignBatchResults(requests, wait, timeout)
 }
 
 func loadConfig(path string) (*ExampleConfig, error) {
@@ -143,144 +67,95 @@ func loadConfig(path string) (*ExampleConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	var cfg ExampleConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+
 	if strings.TrimSpace(cfg.NATSURL) == "" {
 		cfg.NATSURL = "nats://127.0.0.1:4222"
 	}
 	if strings.TrimSpace(cfg.ClientID) == "" {
 		cfg.ClientID = "relaybridge-example"
 	}
-	if cfg.Batch.Count <= 0 {
-		cfg.Batch.Count = 1
+	if strings.TrimSpace(cfg.Timeout) == "" {
+		cfg.Timeout = "60s"
 	}
-	if cfg.Batch.Concurrency <= 0 {
-		cfg.Batch.Concurrency = cfg.Batch.Count
+	if cfg.Keygen != nil {
+		prepareSession(&cfg.Keygen.Session, rbtypes.OperationKeygen)
 	}
+	if cfg.Sign != nil {
+		prepareSession(&cfg.Sign.Session, rbtypes.OperationSign)
+	}
+
 	return &cfg, nil
 }
 
-func buildKeygenRequests(base rbtypes.KeygenRequest, batch BatchConfig) []rbtypes.KeygenRequest {
-	requests := make([]rbtypes.KeygenRequest, 0, batch.Count)
-	for i := 0; i < batch.Count; i++ {
-		req := base
-		req.Session.Operation = rbtypes.OperationKeygen
-		req.Session.WalletID = batchWalletID(base.Session.WalletID, batch, i)
-		req.Session.SessionID = uuid.NewString()
-		requests = append(requests, req)
+func prepareSession(session *rbtypes.SessionContext, operation rbtypes.Operation) {
+	session.Operation = operation
+	if strings.TrimSpace(session.SessionID) == "" {
+		session.SessionID = uuid.NewString()
 	}
-	return requests
-}
-
-func buildSignRequests(base rbtypes.SignRequest, batch BatchConfig) []rbtypes.SignRequest {
-	requests := make([]rbtypes.SignRequest, 0, batch.Count)
-	for i := 0; i < batch.Count; i++ {
-		req := base
-		req.Session.Operation = rbtypes.OperationSign
-		req.Session.WalletID = batchWalletID(base.Session.WalletID, batch, i)
-		req.Session.SessionID = uuid.NewString()
-		requests = append(requests, req)
-	}
-	return requests
-}
-
-func batchWalletID(baseWalletID string, batch BatchConfig, index int) string {
-	if batch.Count <= 1 {
-		return baseWalletID
-	}
-	prefix := strings.TrimSpace(batch.WalletPrefix)
-	if prefix == "" {
-		prefix = inferWalletPrefix(baseWalletID)
-	}
-	return prefix + strconv.Itoa(batch.WalletStart+index)
-}
-
-func inferWalletPrefix(baseWalletID string) string {
-	baseWalletID = strings.TrimSpace(baseWalletID)
-	if baseWalletID == "" {
-		return "wallet-"
-	}
-	end := len(baseWalletID)
-	for end > 0 && baseWalletID[end-1] >= '0' && baseWalletID[end-1] <= '9' {
-		end--
-	}
-	if end == len(baseWalletID) {
-		return baseWalletID + "-"
-	}
-	return baseWalletID[:end]
-}
-
-func sendKeygenBatchSequentially(client rbclient.Client, requests []rbtypes.KeygenRequest) {
-	for _, req := range requests {
-		logSession("keygen", req.Session)
-		if err := client.CreateKeygen(req); err != nil {
-			exitf("create keygen wallet_id=%s session_id=%s: %v", req.Session.WalletID, req.Session.SessionID, err)
-		}
-		fmt.Printf("sent keygen request session_id=%s wallet_id=%s\n", req.Session.SessionID, req.Session.WalletID)
+	if strings.TrimSpace(session.WalletID) == "" {
+		session.WalletID = uuid.NewString()
 	}
 }
 
-func sendSignBatchSequentially(client rbclient.Client, requests []rbtypes.SignRequest) {
-	for _, req := range requests {
-		logSession("sign", req.Session)
-		fmt.Printf("signer_indexes=%v message_digest_len=%d\n", req.SignerIndexes, len(req.MessageDigestHex))
-		if err := client.Sign(req); err != nil {
-			exitf("sign wallet_id=%s session_id=%s: %v", req.Session.WalletID, req.Session.SessionID, err)
-		}
-		fmt.Printf("sent sign request session_id=%s wallet_id=%s signers=%v\n", req.Session.SessionID, req.Session.WalletID, req.SignerIndexes)
+func runKeygen(client rbclient.Client, req *rbtypes.KeygenRequest, timeout time.Duration) {
+	startedAt := time.Now()
+	expected := len(requestedKeygenProtocols(req.Session.Protocol))
+	wait := make(chan rbtypes.KeygenResult, expected)
+	if err := client.OnKeygenResult(func(result rbtypes.KeygenResult) {
+		wait <- result
+	}); err != nil {
+		exitf("subscribe keygen result: %v", err)
 	}
-}
 
-func collectKeygenBatchResults(requests []rbtypes.KeygenRequest, wait <-chan rbtypes.KeygenResult, timeout time.Duration) {
-	pending := make(map[string]rbtypes.KeygenRequest, len(requests))
-	for _, req := range requests {
-		pending[req.Session.SessionID] = req
+	if err := client.CreateKeygen(*req); err != nil {
+		exitf("create keygen: %v", err)
 	}
+
+	results := make([]rbtypes.KeygenResult, 0, expected)
 	deadline := time.After(timeout)
-	results := make([]rbtypes.KeygenResult, 0, len(requests))
-	for {
-		if len(pending) == 0 {
-			break
-		}
+	for len(results) < expected {
 		select {
 		case result := <-wait:
-			if _, ok := pending[result.SessionID]; !ok {
-				continue
-			}
-			delete(pending, result.SessionID)
 			results = append(results, result)
 		case <-deadline:
-			exitf("timed out waiting for keygen results pending=%d", len(pending))
+			exitf("timed out waiting for keygen result")
 		}
 	}
+
+	if expected == 1 {
+		printJSON(results[0])
+		printSummary("keygen", startedAt, 1)
+		return
+	}
 	printJSON(results)
+	printSummary("keygen", startedAt, expected)
 }
 
-func collectSignBatchResults(requests []rbtypes.SignRequest, wait <-chan rbtypes.SignResult, timeout time.Duration) {
-	pending := make(map[string]rbtypes.SignRequest, len(requests))
-	for _, req := range requests {
-		pending[req.Session.SessionID] = req
+func runSign(client rbclient.Client, req *rbtypes.SignRequest, timeout time.Duration) {
+	startedAt := time.Now()
+	wait := make(chan rbtypes.SignResult, 1)
+	if err := client.OnSignResult(func(result rbtypes.SignResult) {
+		wait <- result
+	}); err != nil {
+		exitf("subscribe sign result: %v", err)
 	}
-	deadline := time.After(timeout)
-	results := make([]rbtypes.SignResult, 0, len(requests))
-	for {
-		if len(pending) == 0 {
-			break
-		}
-		select {
-		case result := <-wait:
-			if _, ok := pending[result.SessionID]; !ok {
-				continue
-			}
-			delete(pending, result.SessionID)
-			results = append(results, result)
-		case <-deadline:
-			exitf("timed out waiting for sign results pending=%d", len(pending))
-		}
+
+	if err := client.Sign(*req); err != nil {
+		exitf("sign: %v", err)
 	}
-	printJSON(results)
+
+	select {
+	case result := <-wait:
+		printJSON(result)
+		printSummary("sign", startedAt, 1)
+	case <-time.After(timeout):
+		exitf("timed out waiting for sign result")
+	}
 }
 
 func printJSON(value any) {
@@ -291,28 +166,25 @@ func printJSON(value any) {
 	fmt.Println(string(blob))
 }
 
-func logSession(kind string, session rbtypes.SessionContext) {
-	fmt.Printf(
-		"preparing %s session_id=%s wallet_id=%s protocol=%s threshold=%d participants=%d\n",
-		kind,
-		session.SessionID,
-		session.WalletID,
-		session.Protocol,
-		session.Threshold,
-		len(session.Participants),
-	)
-	for i, participant := range session.Participants {
-		fmt.Printf(
-			"participant[%d] id=%s type=%s pubkey_len=%d\n",
-			i,
-			participant.ID,
-			participant.ParticipantType,
-			len(participant.IdentityPublicKeyHex),
-		)
-	}
-}
-
 func exitf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+func printSummary(operation string, startedAt time.Time, results int) {
+	fmt.Printf(
+		"completed operation=%s results=%d elapsed=%s\n",
+		operation,
+		results,
+		time.Since(startedAt).Round(time.Millisecond),
+	)
+}
+
+func requestedKeygenProtocols(protocol rbtypes.Protocol) []rbtypes.Protocol {
+	switch normalized := rbtypes.Protocol(strings.ToLower(strings.TrimSpace(string(protocol)))); normalized {
+	case "":
+		return []rbtypes.Protocol{rbtypes.ProtocolECDSA, rbtypes.ProtocolEdDSA}
+	default:
+		return []rbtypes.Protocol{normalized}
+	}
 }

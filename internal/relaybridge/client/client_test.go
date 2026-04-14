@@ -49,6 +49,50 @@ func TestCreateKeygenPublishesRelayRequestForExternalParticipant(t *testing.T) {
 	assert.Equal(t, "client-1", msg.Header.Get(event.ClientIDHeader))
 }
 
+func TestCreateKeygenWithoutProtocolPublishesECDSAAndEdDSA(t *testing.T) {
+	ns := startJetStreamTestServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	ecdsaSub, err := nc.SubscribeSync(routing.KeygenRelayRequestSubject("cosigner-1", "wallet-1", rbtypes.ProtocolECDSA, "session-1-ecdsa"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ecdsaSub.Unsubscribe() })
+
+	eddsaSub, err := nc.SubscribeSync(routing.KeygenRelayRequestSubject("cosigner-1", "wallet-1", rbtypes.ProtocolEdDSA, "session-1-eddsa"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eddsaSub.Unsubscribe() })
+
+	c := New(Options{
+		NATSConn: nc,
+		ClientID: "client-1",
+	})
+	t.Cleanup(c.Close)
+
+	err = c.CreateKeygen(rbtypes.KeygenRequest{
+		Session: rbtypes.SessionContext{
+			SessionID: "session-1",
+			WalletID:  "wallet-1",
+			Participants: []rbtypes.Participant{
+				{ID: "node0", ParticipantType: rbtypes.ParticipantNode},
+				{ID: "cosigner-1", ParticipantType: rbtypes.ParticipantServer},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	ecdsaMsg, err := ecdsaSub.NextMsg(3 * time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "client-1", ecdsaMsg.Header.Get(event.ClientIDHeader))
+	assert.Equal(t, routing.KeygenRelayRequestSubject("cosigner-1", "wallet-1", rbtypes.ProtocolECDSA, "session-1-ecdsa"), ecdsaMsg.Subject)
+
+	eddsaMsg, err := eddsaSub.NextMsg(3 * time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "client-1", eddsaMsg.Header.Get(event.ClientIDHeader))
+	assert.Equal(t, routing.KeygenRelayRequestSubject("cosigner-1", "wallet-1", rbtypes.ProtocolEdDSA, "session-1-eddsa"), eddsaMsg.Subject)
+}
+
 func startJetStreamTestServer(t *testing.T) *natsserver.Server {
 	t.Helper()
 	server, err := natsserver.NewServer(&natsserver.Options{

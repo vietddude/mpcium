@@ -134,7 +134,6 @@ func (s *Service) RunKeygen(ctx context.Context, req rbtypes.KeygenRequest) (*rb
 	if err := s.store.SaveKeyShare(record); err != nil {
 		return nil, err
 	}
-	ref := rbstorage.ShareRef(record.WalletID, record.KeyType, record.CosignerID)
 	pubKey, err := derivePublicKey(string(req.Session.Protocol), result.ShareBlob, s.ecdsaPreparams)
 	if err != nil {
 		return nil, err
@@ -143,7 +142,6 @@ func (s *Service) RunKeygen(ctx context.Context, req rbtypes.KeygenRequest) (*rb
 		SessionID:  resolved.Session.SessionID,
 		WalletID:   resolved.Session.WalletID,
 		Protocol:   string(resolved.Session.Protocol),
-		ShareRef:   ref,
 		PubKey:     pubKey,
 		ResultType: event.ResultTypeSuccess,
 	}, nil

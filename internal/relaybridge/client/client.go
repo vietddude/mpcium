@@ -100,24 +100,33 @@ func (c *client) CreateKeygen(req rbtypes.KeygenRequest) error {
 	if err := validateKeygenRequest(req); err != nil {
 		return err
 	}
-	logger.Info(
-		"mpcium-relaybridge client create keygen",
-		"session_id", req.Session.SessionID,
-		"wallet_id", req.Session.WalletID,
-		"participants", len(req.Session.Participants),
-	)
-	return c.publishRequests(
-		rbtypes.UniqueParticipants(req.Session.Participants),
-		req.Session.WalletID,
-		req.Session.Protocol,
-		rbtypes.OperationKeygen,
-		req.Session.SessionID,
-		func(participantID string) any {
-			localReq := req
-			localReq.Session.LocalParticipantID = participantID
-			return localReq
-		},
-	)
+	for _, protocol := range requestedKeygenProtocols(req.Session.Protocol) {
+		sessionID := keygenSessionID(req.Session.SessionID, req.Session.Protocol, protocol)
+		logger.Info(
+			"mpcium-relaybridge client create keygen",
+			"session_id", sessionID,
+			"wallet_id", req.Session.WalletID,
+			"participants", len(req.Session.Participants),
+			"protocol", protocol,
+		)
+		if err := c.publishRequests(
+			rbtypes.UniqueParticipants(req.Session.Participants),
+			req.Session.WalletID,
+			protocol,
+			rbtypes.OperationKeygen,
+			sessionID,
+			func(participantID string) any {
+				localReq := req
+				localReq.Session.Protocol = protocol
+				localReq.Session.SessionID = sessionID
+				localReq.Session.LocalParticipantID = participantID
+				return localReq
+			},
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *client) Sign(req rbtypes.SignRequest) error {
@@ -304,8 +313,8 @@ func validateKeygenRequest(req rbtypes.KeygenRequest) error {
 	if len(req.Session.Participants) == 0 {
 		return fmt.Errorf("session.participants are required")
 	}
-	if strings.TrimSpace(string(req.Session.Protocol)) == "" {
-		return fmt.Errorf("session.protocol is required")
+	if err := validateOptionalKeygenProtocol(req.Session.Protocol); err != nil {
+		return err
 	}
 	return nil
 }
@@ -344,4 +353,32 @@ func isExternalParticipant(participant rbtypes.Participant) bool {
 	default:
 		return false
 	}
+}
+
+func requestedKeygenProtocols(protocol rbtypes.Protocol) []rbtypes.Protocol {
+	switch normalized := rbtypes.Protocol(strings.ToLower(strings.TrimSpace(string(protocol)))); normalized {
+	case "":
+		return []rbtypes.Protocol{rbtypes.ProtocolECDSA, rbtypes.ProtocolEdDSA}
+	default:
+		return []rbtypes.Protocol{normalized}
+	}
+}
+
+func validateOptionalKeygenProtocol(protocol rbtypes.Protocol) error {
+	switch rbtypes.Protocol(strings.ToLower(strings.TrimSpace(string(protocol)))) {
+	case "", rbtypes.ProtocolECDSA, rbtypes.ProtocolEdDSA:
+		return nil
+	default:
+		return fmt.Errorf("session.protocol must be ecdsa or eddsa")
+	}
+}
+
+func keygenSessionID(base string, requested rbtypes.Protocol, actual rbtypes.Protocol) string {
+	if strings.TrimSpace(base) == "" {
+		return base
+	}
+	if strings.TrimSpace(string(requested)) != "" {
+		return base
+	}
+	return base + "-" + string(actual)
 }

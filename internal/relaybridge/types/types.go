@@ -58,7 +58,6 @@ type KeygenResult struct {
 	SessionID string `json:"session_id"`
 	WalletID  string `json:"wallet_id"`
 	Protocol  string `json:"protocol"`
-	ShareRef  string `json:"share_ref"`
 	PubKey    []byte `json:"pub_key,omitempty"`
 
 	ResultType  event.ResultType `json:"result_type"`
