@@ -1,6 +1,7 @@
 {
   "keygen": {
     "session": {
+      "protocol": "ecdsa",
       "threshold": 1,
       "participants": [
         {
@@ -9,9 +10,9 @@
           "identity_public_key_hex": "f56e84aab70103e4c7a4dffc8391a7d0c2a8e3f10c20b18fd183d6fd6531b3ae"
         },
         {
-          "id": "node1",
-          "participant_type": "node",
-          "identity_public_key_hex": "d16d9a944cabacadf57e0f7a1a0d890e1991e95faf628e98db68636fa6acbd17"
+          "id": "cosigner-server-1",
+          "participant_type": "cosigner_server",
+          "identity_public_key_hex": "16799b99d61685b92e95c134cb775a5ffa387ae8d228b0a57fa821a2a78ff6d0"
         }
       ]
     }
