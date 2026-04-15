@@ -10,13 +10,12 @@ import (
 	"time"
 
 	"github.com/fystack/mpcium-sdk/mpcore"
-	"github.com/fystack/mpcium-sdk/protocol"
 	"github.com/fystack/mpcium-sdk/secure"
 	rbconfig "github.com/fystack/mpcium/internal/relaybridge/config"
-	routing "github.com/fystack/mpcium/internal/relaybridge/routing"
-	rbtransport "github.com/fystack/mpcium/internal/relaybridge/transport"
-	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
+	st "github.com/fystack/mpcium/internal/relaybridge/sessiontransport"
 	"github.com/fystack/mpcium/pkg/logger"
+	routing "github.com/fystack/mpcium/pkg/relaybridge/routing"
+	rbtypes "github.com/fystack/mpcium/pkg/relaybridge/types"
 )
 
 type ResolvedSession struct {
@@ -24,20 +23,37 @@ type ResolvedSession struct {
 	Protocol       mpcore.Protocol
 	LocalIndex     uint16
 	Participants   []mpcore.Participant
-	PeerIdentities map[uint16]secure.PeerIdentity
+	PeerIdentities map[string]secure.PeerIdentity
 }
 
 type Runner struct {
-	resolved          *ResolvedSession
-	cfg               mpcore.SessionConfig
-	transport         rbtransport.SessionEnvelopeTransport
-	session           *secure.SecureSession
-	sub               rbtransport.SessionEnvelopeSubscription
-	readyPeers        map[string]struct{}
-	peerReadyTimeout  time.Duration
-	peerReadyInterval time.Duration
-	pending           []protocol.Envelope
-	started           bool
+	resolved             *ResolvedSession
+	cfg                  mpcore.SessionConfig
+	transport            st.Transport
+	session              secureSession
+	sub                  st.Subscription
+	keyExchangeSeenPeers map[string]struct{}
+	phase                runnerPhase
+}
+
+type runnerPhase string
+
+const (
+	runnerPhaseKeyExchange = "key_exchange"
+	runnerPhaseMPC         = "mpc"
+	runnerPhaseDone        = "done"
+)
+
+const (
+	keyExchangeReadyTimeout  = 10 * time.Second
+	keyExchangeRetryInterval = 300 * time.Millisecond
+)
+
+type secureSession interface {
+	StartKeyExchange() ([]secure.Message, error)
+	StartMPC() ([]secure.Message, *mpcore.Result, error)
+	Apply(msg secure.Message) ([]secure.Message, *mpcore.Result, error)
+	Status() secure.Status
 }
 
 func ResolveContext(session rbtypes.SessionContext, participantID string) (*ResolvedSession, error) {
@@ -47,15 +63,9 @@ func ResolveContext(session rbtypes.SessionContext, participantID string) (*Reso
 	if strings.TrimSpace(session.WalletID) == "" {
 		return nil, fmt.Errorf("wallet_id is required")
 	}
-	if strings.TrimSpace(session.LocalParticipantID) == "" {
-		return nil, fmt.Errorf("local_participant_id is required")
-	}
-	if session.LocalParticipantID != participantID {
-		return nil, fmt.Errorf(
-			"request local_participant_id %q does not match runtime participant_id %q",
-			session.LocalParticipantID,
-			participantID,
-		)
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" {
+		return nil, fmt.Errorf("runtime participant_id is required")
 	}
 	protocolValue, err := parseProtocol(session.Protocol)
 	if err != nil {
@@ -65,7 +75,7 @@ func ResolveContext(session rbtypes.SessionContext, participantID string) (*Reso
 		return nil, fmt.Errorf("participants are required")
 	}
 	participants := make([]mpcore.Participant, 0, len(session.Participants))
-	peerIdentities := make(map[uint16]secure.PeerIdentity, len(session.Participants))
+	peerIdentities := make(map[string]secure.PeerIdentity, len(session.Participants))
 	localIndex := -1
 	for i, participant := range session.Participants {
 		if strings.TrimSpace(participant.ID) == "" {
@@ -87,16 +97,14 @@ func ResolveContext(session rbtypes.SessionContext, participantID string) (*Reso
 			Moniker:   participant.Moniker,
 			UniqueKey: uniqueKey,
 		})
-		peerIdentities[uint16(i)] = secure.PeerIdentity{
-			ParticipantID: participant.ID,
-			PublicKey:     publicKey,
-		}
-		if participant.ID == session.LocalParticipantID {
+		peerIdentities[participant.ID] = secure.PeerIdentity{PublicKey: publicKey}
+		if participant.ID == participantID {
 			localIndex = i
+			session.LocalParticipantID = participant.ID
 		}
 	}
 	if localIndex < 0 {
-		return nil, fmt.Errorf("local participant %q is not in participants", session.LocalParticipantID)
+		return nil, fmt.Errorf("runtime participant %q is not in participants", participantID)
 	}
 	return &ResolvedSession{
 		Session:        session,
@@ -110,27 +118,26 @@ func ResolveContext(session rbtypes.SessionContext, participantID string) (*Reso
 func NewRunner(
 	resolved *ResolvedSession,
 	cfg mpcore.SessionConfig,
-	sessionTransport rbtransport.SessionEnvelopeTransport,
+	sessionTransport st.Transport,
 	store secure.IdentityStore,
 	appCfg rbconfig.Config,
 ) (*Runner, error) {
-	secureSession, err := secure.NewSession(secure.SecureSessionConfig{
+	secureSession, err := secure.NewSecureSession(secure.Config{
 		Session:        cfg,
 		IdentityStore:  store,
 		IdentityRef:    appCfg.IdentityRef(),
 		PeerIdentities: resolved.PeerIdentities,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create secure session: %w", err)
 	}
 	return &Runner{
-		resolved:          resolved,
-		cfg:               cfg,
-		transport:         sessionTransport,
-		session:           secureSession,
-		readyPeers:        map[string]struct{}{},
-		peerReadyTimeout:  appCfg.PeerReadyTimeout(),
-		peerReadyInterval: appCfg.PeerReadyInterval(),
+		resolved:             resolved,
+		cfg:                  cfg,
+		transport:            sessionTransport,
+		session:              secureSession,
+		keyExchangeSeenPeers: map[string]struct{}{},
+		phase:                runnerPhaseKeyExchange,
 	}, nil
 }
 
@@ -155,23 +162,81 @@ func (r *Runner) Run(ctx context.Context) (*mpcore.Result, error) {
 	}()
 	msgCh := sub.Messages()
 
-	if err := r.waitForPeersReady(ctx, msgCh); err != nil {
-		return nil, err
-	}
-	logger.Info(
-		"mpcium-relaybridge all peers ready",
-		"participant_id", r.resolved.Session.LocalParticipantID,
-		"session_id", r.cfg.SessionID,
-		"wallet_id", r.resolved.Session.WalletID,
-		"peers", strings.Join(r.peerIDsExceptSelf(), ","),
-	)
-	outbound, result, err := r.session.Start()
+	keyExchangeOutbound, err := r.session.StartKeyExchange()
 	if err != nil {
 		return nil, err
 	}
-	r.started = true
 	logger.Info(
-		"mpcium-relaybridge secure session started",
+		"mpcium-relaybridge secure key exchange publish",
+		"participant_id", r.resolved.Session.LocalParticipantID,
+		"session_id", r.cfg.SessionID,
+		"wallet_id", r.resolved.Session.WalletID,
+		"outbound_messages", len(keyExchangeOutbound),
+	)
+	if err := r.runKeyExchangePhase(ctx, msgCh, keyExchangeOutbound); err != nil {
+		return nil, err
+	}
+	return r.runMPCPhase(ctx, msgCh)
+}
+
+func (r *Runner) runKeyExchangePhase(
+	ctx context.Context,
+	msgCh <-chan st.Delivery,
+	initialOutbound []secure.Message,
+) error {
+	if err := r.publishOutbound(initialOutbound); err != nil {
+		return err
+	}
+	deadlineCtx, cancel := context.WithTimeout(ctx, keyExchangeReadyTimeout)
+	defer cancel()
+	ticker := time.NewTicker(keyExchangeRetryInterval)
+	defer ticker.Stop()
+
+	for len(r.session.Status().WaitingForKeys) > 0 {
+		select {
+		case <-deadlineCtx.Done():
+			return fmt.Errorf("timeout waiting for key exchange readiness: %w", deadlineCtx.Err())
+		case <-ticker.C:
+			waiting := strings.Join(r.session.Status().WaitingForKeys, ",")
+			logger.Debug(
+				"mpcium-relaybridge retry key exchange publish",
+				"participant_id", r.resolved.Session.LocalParticipantID,
+				"session_id", r.cfg.SessionID,
+				"wallet_id", r.resolved.Session.WalletID,
+				"waiting_for_keys", waiting,
+			)
+			if err := r.publishOutbound(initialOutbound); err != nil {
+				return err
+			}
+		case msg, ok := <-msgCh:
+			if !ok {
+				return errors.New("session transport subscription closed")
+			}
+			if msg.Err != nil {
+				return msg.Err
+			}
+			if !r.matchesEnvelope(msg.Payload) {
+				continue
+			}
+			if err := r.handleKeyExchangeEnvelope(msg.Payload); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Runner) runMPCPhase(
+	ctx context.Context,
+	msgCh <-chan st.Delivery,
+) (*mpcore.Result, error) {
+	r.phase = runnerPhaseMPC
+	outbound, result, err := r.session.StartMPC()
+	if err != nil {
+		return nil, err
+	}
+	logger.Info(
+		"mpcium-relaybridge secure mpc started",
 		"participant_id", r.resolved.Session.LocalParticipantID,
 		"session_id", r.cfg.SessionID,
 		"wallet_id", r.resolved.Session.WalletID,
@@ -181,120 +246,24 @@ func (r *Runner) Run(ctx context.Context) (*mpcore.Result, error) {
 		return nil, err
 	}
 	if result != nil {
+		r.phase = runnerPhaseDone
 		return result, nil
 	}
-	for _, env := range r.pending {
-		res, err := r.handleEnvelope(env)
+
+	for {
+		env, err := r.nextEnvelope(ctx, msgCh)
+		if err != nil {
+			return nil, err
+		}
+		res, err := r.handleMPCEnvelope(env)
 		if err != nil {
 			return nil, err
 		}
 		if res != nil {
+			r.phase = runnerPhaseDone
 			return res, nil
 		}
 	}
-	r.pending = nil
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case msg, ok := <-msgCh:
-			if !ok {
-				return nil, errors.New("session transport subscription closed")
-			}
-			if msg.Err != nil {
-				return nil, msg.Err
-			}
-			if msg.Envelope.Session == nil {
-				continue
-			}
-			res, err := r.handleEnvelope(msg.Envelope)
-			if err != nil {
-				return nil, err
-			}
-			if res != nil {
-				return res, nil
-			}
-		}
-	}
-}
-
-func (r *Runner) waitForPeersReady(
-	ctx context.Context,
-	msgCh <-chan rbtransport.SessionEnvelopeMessage,
-) error {
-	peers := r.peerIDsExceptSelf()
-	if len(peers) == 0 {
-		return nil
-	}
-	deadlineCtx, cancel := r.peerReadyContext(ctx)
-	defer cancel()
-	logger.Info(
-		"mpcium-relaybridge waiting for peer readiness",
-		"participant_id", r.resolved.Session.LocalParticipantID,
-		"session_id", r.cfg.SessionID,
-		"wallet_id", r.resolved.Session.WalletID,
-		"expected_peers", strings.Join(peers, ","),
-		"timeout", peerReadyTimeoutLabel(deadlineCtx, r.peerReadyTimeout),
-		"interval", r.peerReadyInterval.String(),
-	)
-
-	ticker := time.NewTicker(r.peerReadyInterval)
-	defer ticker.Stop()
-
-	for {
-		if r.hasAllReadyPeers(peers) {
-			return nil
-		}
-		if err := r.publishReady(peers); err != nil {
-			return err
-		}
-		select {
-		case <-deadlineCtx.Done():
-			logger.Error(
-				"mpcium-relaybridge peer readiness timeout",
-				deadlineCtx.Err(),
-				"participant_id", r.resolved.Session.LocalParticipantID,
-				"session_id", r.cfg.SessionID,
-				"wallet_id", r.resolved.Session.WalletID,
-				"expected_peers", strings.Join(peers, ","),
-				"ready_peers", strings.Join(r.sortedReadyPeers(), ","),
-			)
-			return fmt.Errorf("timeout waiting for peer readiness: %w", deadlineCtx.Err())
-		case <-ticker.C:
-		case msg, ok := <-msgCh:
-			if !ok {
-				return errors.New("session transport subscription closed")
-			}
-			if msg.Err != nil {
-				return msg.Err
-			}
-			if msg.Envelope.Session == nil {
-				continue
-			}
-			if _, err := r.handleEnvelope(msg.Envelope); err != nil {
-				return err
-			}
-		}
-	}
-}
-
-func (r *Runner) publishReady(peers []string) error {
-	for _, peerID := range peers {
-		env := r.newSessionEnvelope([]string{peerID}, nil)
-		logger.Debug(
-			"mpcium-relaybridge publish ready",
-			"participant_id", r.resolved.Session.LocalParticipantID,
-			"peer_id", peerID,
-			"session_id", r.cfg.SessionID,
-			"wallet_id", r.resolved.Session.WalletID,
-			"subject", r.outboundSubject(peerID),
-		)
-		if err := r.publishEnvelope(peerID, env); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (r *Runner) publishOutbound(messages []secure.Message) error {
@@ -323,71 +292,107 @@ func (r *Runner) publishOutbound(messages []secure.Message) error {
 	return nil
 }
 
-func (r *Runner) publishEnvelope(peerID string, env protocol.Envelope) error {
+func (r *Runner) publishEnvelope(peerID string, env st.Payload) error {
 	subject := r.outboundSubject(peerID)
 	return r.transport.Publish(subject, env)
 }
 
-func (r *Runner) handleEnvelope(env protocol.Envelope) (*mpcore.Result, error) {
-	if env.Type != protocol.EnvelopeTypeSession || env.Session == nil {
-		return nil, nil
+func (r *Runner) nextEnvelope(
+	ctx context.Context,
+	msgCh <-chan st.Delivery,
+) (st.Payload, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return st.Payload{}, ctx.Err()
+		case msg, ok := <-msgCh:
+			if !ok {
+				return st.Payload{}, errors.New("session transport subscription closed")
+			}
+			if msg.Err != nil {
+				return st.Payload{}, msg.Err
+			}
+			if !r.matchesEnvelope(msg.Payload) {
+				continue
+			}
+			return msg.Payload, nil
+		}
 	}
-	if env.Session.SessionID != r.cfg.SessionID ||
-		env.Session.WalletID != r.resolved.Session.WalletID ||
-		env.Session.Protocol != r.cfg.Protocol.String() ||
-		env.Session.Operation != r.cfg.Operation.String() {
-		logger.Info(
-			"mpcium-relaybridge ignore session envelope due metadata mismatch",
-			"participant_id", r.resolved.Session.LocalParticipantID,
-			"from_peer", env.Session.SenderID,
-			"expected_session_id", r.cfg.SessionID,
-			"got_session_id", env.Session.SessionID,
-			"expected_wallet_id", r.resolved.Session.WalletID,
-			"got_wallet_id", env.Session.WalletID,
-			"expected_protocol", r.cfg.Protocol.String(),
-			"got_protocol", env.Session.Protocol,
-			"expected_operation", r.cfg.Operation.String(),
-			"got_operation", env.Session.Operation,
-		)
-		return nil, nil
+}
+
+func (r *Runner) matchesEnvelope(env st.Payload) bool {
+	if env.SessionID == r.cfg.SessionID &&
+		env.WalletID == r.resolved.Session.WalletID &&
+		env.Protocol == r.cfg.Protocol.String() &&
+		env.Operation == r.cfg.Operation.String() {
+		return true
 	}
-	firstReady := r.markPeerReady(env.Session.SenderID)
-	if rbtransport.IsReadyEnvelope(env) {
-		logReadyReceipt(r, env.Session.SenderID, firstReady)
-		return nil, nil
+	logger.Info(
+		"mpcium-relaybridge ignore session envelope due metadata mismatch",
+		"participant_id", r.resolved.Session.LocalParticipantID,
+		"from_peer", env.SenderID,
+		"expected_session_id", r.cfg.SessionID,
+		"got_session_id", env.SessionID,
+		"expected_wallet_id", r.resolved.Session.WalletID,
+		"got_wallet_id", env.WalletID,
+		"expected_protocol", r.cfg.Protocol.String(),
+		"got_protocol", env.Protocol,
+		"expected_operation", r.cfg.Operation.String(),
+		"got_operation", env.Operation,
+	)
+	return false
+}
+
+func (r *Runner) handleKeyExchangeEnvelope(env st.Payload) error {
+	if !isKeyExchangeSessionEnvelope(env) {
+		return fmt.Errorf("received %s during key exchange phase", describeEnvelope(env))
 	}
-	if !r.started {
-		logger.Info(
-			"mpcium-relaybridge queue secure message before start",
-			"participant_id", r.resolved.Session.LocalParticipantID,
-			"from_peer", env.Session.SenderID,
-			"session_id", r.cfg.SessionID,
-			"wallet_id", r.resolved.Session.WalletID,
-			"message_type", env.Session.Message.Type,
-		)
-		r.pending = append(r.pending, env)
-		return nil, nil
+	r.markPeerKeyExchange(env.SenderID)
+	logger.Debug(
+		"mpcium-relaybridge accepted secure envelope",
+		"participant_id", r.resolved.Session.LocalParticipantID,
+		"from_peer", env.SenderID,
+		"session_id", r.cfg.SessionID,
+		"wallet_id", r.resolved.Session.WalletID,
+		"message_type", env.Message.Type,
+	)
+	outbound, result, err := r.session.Apply(env.Message)
+	if err != nil {
+		return err
 	}
-	if env.Session.Message.Type == "" {
-		return nil, nil
+	if result != nil {
+		return fmt.Errorf("unexpected result during key exchange phase")
+	}
+	if err := r.publishOutbound(outbound); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Runner) handleMPCEnvelope(env st.Payload) (*mpcore.Result, error) {
+	if isKeyExchangeSessionEnvelope(env) {
+		return nil, fmt.Errorf("received key exchange during mpc phase")
+	}
+	if env.Message.Type == "" {
+		return nil, fmt.Errorf("received empty secure message during mpc phase")
 	}
 	logger.Debug(
 		"mpcium-relaybridge accepted secure envelope",
 		"participant_id", r.resolved.Session.LocalParticipantID,
-		"from_peer", env.Session.SenderID,
+		"from_peer", env.SenderID,
 		"session_id", r.cfg.SessionID,
 		"wallet_id", r.resolved.Session.WalletID,
-		"message_type", env.Session.Message.Type,
+		"message_type", env.Message.Type,
 	)
 	logger.Debug(
 		"mpcium-relaybridge apply secure message",
 		"participant_id", r.resolved.Session.LocalParticipantID,
-		"from_peer", env.Session.SenderID,
+		"from_peer", env.SenderID,
 		"session_id", r.cfg.SessionID,
 		"wallet_id", r.resolved.Session.WalletID,
-		"message_type", env.Session.Message.Type,
+		"message_type", env.Message.Type,
 	)
-	outbound, result, err := r.session.Apply(env.Session.Message)
+	outbound, result, err := r.session.Apply(env.Message)
 	if err != nil {
 		return nil, err
 	}
@@ -398,9 +403,23 @@ func (r *Runner) handleEnvelope(env protocol.Envelope) (*mpcore.Result, error) {
 }
 
 func (r *Runner) recipientsForMessage(message secure.Message) ([]string, error) {
-	recipients, err := r.session.RecipientIDs(message)
-	if err != nil {
-		return nil, err
+	var recipients []string
+	switch message.Type {
+	case secure.MessageTypeSignedBroadcast:
+		recipients = r.peerIDsExceptSelf()
+	case secure.MessageTypeEncryptedDirect:
+		if message.EncryptedDirect == nil {
+			return nil, fmt.Errorf("encrypted direct payload is required")
+		}
+		for _, participantID := range message.EncryptedDirect.Message.RecipientParticipantIDs {
+			participantID = strings.TrimSpace(participantID)
+			if participantID == "" {
+				return nil, fmt.Errorf("encrypted direct recipient participant ID is required")
+			}
+			recipients = append(recipients, participantID)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported secure message type %q", message.Type)
 	}
 	for _, recipientID := range recipients {
 		if recipientID != r.resolved.Session.LocalParticipantID {
@@ -425,67 +444,15 @@ func (r *Runner) peerIDsExceptSelf() []string {
 	return peers
 }
 
-func (r *Runner) hasAllReadyPeers(peers []string) bool {
-	for _, peerID := range peers {
-		if _, ok := r.readyPeers[peerID]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func (r *Runner) sortedReadyPeers() []string {
-	peers := make([]string, 0, len(r.readyPeers))
-	for peerID := range r.readyPeers {
-		peers = append(peers, peerID)
-	}
-	return peers
-}
-
-func (r *Runner) markPeerReady(peerID string) bool {
+func (r *Runner) markPeerKeyExchange(peerID string) bool {
 	if strings.TrimSpace(peerID) == "" {
 		return false
 	}
-	if _, exists := r.readyPeers[peerID]; exists {
+	if _, exists := r.keyExchangeSeenPeers[peerID]; exists {
 		return false
 	}
-	r.readyPeers[peerID] = struct{}{}
+	r.keyExchangeSeenPeers[peerID] = struct{}{}
 	return true
-}
-
-func (r *Runner) peerReadyContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, hasDeadline := ctx.Deadline(); hasDeadline {
-		return ctx, func() {}
-	}
-	if r.peerReadyTimeout <= 0 {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, r.peerReadyTimeout)
-}
-
-func peerReadyTimeoutLabel(ctx context.Context, fallback time.Duration) string {
-	if deadline, ok := ctx.Deadline(); ok {
-		return time.Until(deadline).Round(time.Millisecond).String()
-	}
-	if fallback <= 0 {
-		return "none"
-	}
-	return fallback.String()
-}
-
-func logReadyReceipt(r *Runner, peerID string, firstReady bool) {
-	logFn := logger.Debug
-	if firstReady {
-		logFn = logger.Info
-	}
-	logFn(
-		"mpcium-relaybridge received ready",
-		"participant_id", r.resolved.Session.LocalParticipantID,
-		"from_peer", peerID,
-		"session_id", r.cfg.SessionID,
-		"wallet_id", r.resolved.Session.WalletID,
-		"ready_peers", strings.Join(r.sortedReadyPeers(), ","),
-	)
 }
 
 func (r *Runner) inboundSubjects() []string {
@@ -512,11 +479,10 @@ func (r *Runner) outboundSubject(peerID string) string {
 	return routing.DirectSessionSubject(peerID, r.resolved.Session.WalletID, protocol, operation, r.cfg.SessionID)
 }
 
-func (r *Runner) newSessionEnvelope(recipientIDs []string, message *secure.Message) protocol.Envelope {
-	payload := &protocol.SessionPayload{
+func (r *Runner) newSessionEnvelope(recipientIDs []string, message *secure.Message) st.Payload {
+	payload := st.Payload{
 		SessionID:    r.cfg.SessionID,
 		WalletID:     r.resolved.Session.WalletID,
-		KeyType:      mpcore.NormalizeKeyType(r.cfg.Protocol.String()),
 		Protocol:     r.cfg.Protocol.String(),
 		Operation:    r.cfg.Operation.String(),
 		SenderID:     r.resolved.Session.LocalParticipantID,
@@ -525,11 +491,7 @@ func (r *Runner) newSessionEnvelope(recipientIDs []string, message *secure.Messa
 	if message != nil {
 		payload.Message = *message
 	}
-	return protocol.Envelope{
-		Version: protocol.EnvelopeVersion,
-		Type:    protocol.EnvelopeTypeSession,
-		Session: payload,
-	}
+	return payload
 }
 
 func parseProtocol(value rbtypes.Protocol) (mpcore.Protocol, error) {
@@ -564,6 +526,23 @@ func cloneSecureMessage(message secure.Message) *secure.Message {
 		return &message
 	}
 	return &cloned
+}
+
+func describeEnvelope(env st.Payload) string {
+	if isKeyExchangeSessionEnvelope(env) {
+		return "key exchange message"
+	}
+	if env.Message.Type == "" {
+		return "empty secure message"
+	}
+	return fmt.Sprintf("secure message type %q", env.Message.Type)
+}
+
+func isKeyExchangeSessionEnvelope(env st.Payload) bool {
+	msg := env.Message
+	return msg.Type == secure.MessageTypeSignedBroadcast &&
+		msg.SignedBroadcast != nil &&
+		msg.SignedBroadcast.Kind == secure.BroadcastKindKeyExchange
 }
 
 func isExternalParticipantID(participants []rbtypes.Participant, participantID string) bool {

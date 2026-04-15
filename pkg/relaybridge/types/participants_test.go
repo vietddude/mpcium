@@ -7,20 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSelectedParticipants(t *testing.T) {
-	participants := []Participant{
-		{ID: "node1"},
-		{ID: "node0"},
-		{ID: "cosigner-1"},
-	}
-
-	selected, err := SelectedParticipants(participants, []uint16{1, 2, 1})
-	require.NoError(t, err)
-	require.Len(t, selected, 2)
-	assert.Equal(t, "node0", selected[0].ID)
-	assert.Equal(t, "cosigner-1", selected[1].ID)
-}
-
 func TestPreferredReporterPrefersInternalNodeByID(t *testing.T) {
 	participants := []Participant{
 		{ID: "node2", ParticipantType: ParticipantNode},

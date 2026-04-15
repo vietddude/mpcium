@@ -19,19 +19,19 @@ import (
 	"github.com/fystack/mpcium-sdk/securecrypto"
 	rbconfig "github.com/fystack/mpcium/internal/relaybridge/config"
 	rbsession "github.com/fystack/mpcium/internal/relaybridge/session"
+	st "github.com/fystack/mpcium/internal/relaybridge/sessiontransport"
 	rbstorage "github.com/fystack/mpcium/internal/relaybridge/storage"
-	rbtransport "github.com/fystack/mpcium/internal/relaybridge/transport"
-	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
 	"github.com/fystack/mpcium/pkg/encoding"
 	"github.com/fystack/mpcium/pkg/event"
 	"github.com/fystack/mpcium/pkg/logger"
+	rbtypes "github.com/fystack/mpcium/pkg/relaybridge/types"
 )
 
 type Service struct {
 	cfg            rbconfig.Config
 	store          rbstorage.KeyShareStorage
 	identityStore  secure.IdentityStore
-	transport      rbtransport.SessionEnvelopeTransport
+	transport      st.Transport
 	ecdsaPreparams []byte
 }
 
@@ -39,7 +39,7 @@ func New(
 	cfg rbconfig.Config,
 	store rbstorage.KeyShareStorage,
 	identityStore secure.IdentityStore,
-	transport rbtransport.SessionEnvelopeTransport,
+	transport st.Transport,
 ) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -307,7 +307,7 @@ func (s *Service) logLocalIdentityPublicKey() error {
 		return err
 	}
 	logger.Info(
-		"mpcium-relaybridge flow local identity loaded",
+		"relaybridge flow local identity loaded",
 		"participant_id",
 		s.cfg.Runtime.ParticipantID,
 		"identity_ref",

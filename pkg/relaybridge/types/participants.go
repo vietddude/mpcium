@@ -1,7 +1,6 @@
 package types
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 )
@@ -14,6 +13,21 @@ func ContainsParticipantID(participants []Participant, participantID string) boo
 		}
 	}
 	return false
+}
+
+func ParticipantByID(participants []Participant, participantID string) (Participant, bool) {
+	participantID = strings.TrimSpace(participantID)
+	for _, participant := range participants {
+		if strings.TrimSpace(participant.ID) == participantID {
+			return participant, true
+		}
+	}
+	return Participant{}, false
+}
+
+func IsExternalParticipant(participant Participant) bool {
+	return participant.ParticipantType == ParticipantServer ||
+		participant.ParticipantType == ParticipantMobile
 }
 
 func UniqueParticipants(participants []Participant) []Participant {
@@ -31,22 +45,6 @@ func UniqueParticipants(participants []Participant) []Participant {
 		unique = append(unique, participant)
 	}
 	return unique
-}
-
-func SelectedParticipants(participants []Participant, signerIndexes []uint16) ([]Participant, error) {
-	selected := make([]Participant, 0, len(signerIndexes))
-	seen := make(map[uint16]struct{}, len(signerIndexes))
-	for _, idx := range signerIndexes {
-		if _, ok := seen[idx]; ok {
-			continue
-		}
-		seen[idx] = struct{}{}
-		if int(idx) >= len(participants) {
-			return nil, fmt.Errorf("signer index %d out of range", idx)
-		}
-		selected = append(selected, participants[idx])
-	}
-	return selected, nil
 }
 
 func PreferredReporter(participants []Participant) string {

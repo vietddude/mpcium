@@ -11,14 +11,14 @@ import (
 
 	"github.com/fystack/mpcium-sdk/secure"
 	rbconfig "github.com/fystack/mpcium/internal/relaybridge/config"
-	routing "github.com/fystack/mpcium/internal/relaybridge/routing"
 	rbservice "github.com/fystack/mpcium/internal/relaybridge/service"
+	st "github.com/fystack/mpcium/internal/relaybridge/sessiontransport"
 	rbstorage "github.com/fystack/mpcium/internal/relaybridge/storage"
-	rbtransport "github.com/fystack/mpcium/internal/relaybridge/transport"
-	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
 	"github.com/fystack/mpcium/pkg/event"
 	"github.com/fystack/mpcium/pkg/logger"
 	"github.com/fystack/mpcium/pkg/messaging"
+	routing "github.com/fystack/mpcium/pkg/relaybridge/routing"
+	rbtypes "github.com/fystack/mpcium/pkg/relaybridge/types"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -76,7 +76,7 @@ func New(ctx context.Context, cfg rbconfig.Config) (*Runtime, error) {
 		nc.Close()
 		return nil, err
 	}
-	svc, err := rbservice.New(cfg, shareStore, identityStore, rbtransport.NewNATS(nc))
+	svc, err := rbservice.New(cfg, shareStore, identityStore, st.NewNATS(nc))
 	if err != nil {
 		_ = shareStore.Close()
 		nc.Close()
@@ -138,7 +138,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	keygenSub, err := r.keygenBroker.CreateSubscription(
 		ctx,
 		routing.KeygenConsumerStream+"."+r.cfg.Runtime.ParticipantID,
-		routing.KeygenRequestFilterSubject(r.cfg.Runtime.ParticipantID),
+		routing.KeygenRequestFilterSubject(),
 		r.handleKeygen,
 	)
 	if err != nil {
@@ -149,7 +149,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	signSub, err := r.signBroker.CreateSubscription(
 		ctx,
 		routing.SignConsumerStream+"."+r.cfg.Runtime.ParticipantID,
-		routing.SignRequestFilterSubject(r.cfg.Runtime.ParticipantID),
+		routing.SignRequestFilterSubject(),
 		r.handleSign,
 	)
 	if err != nil {
@@ -158,10 +158,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.signSub = signSub
 
 	logger.Info(
-		"mpcium-relaybridge runtime started",
+		"relaybridge runtime started",
 		"participant_id", r.cfg.Runtime.ParticipantID,
-		"keygen_subject", routing.KeygenRequestFilterSubject(r.cfg.Runtime.ParticipantID),
-		"sign_subject", routing.SignRequestFilterSubject(r.cfg.Runtime.ParticipantID),
+		"keygen_subject", routing.KeygenRequestFilterSubject(),
+		"sign_subject", routing.SignRequestFilterSubject(),
 	)
 	<-ctx.Done()
 	return nil
@@ -192,10 +192,6 @@ func (r *Runtime) Close() error {
 	return nil
 }
 
-func (r *Runtime) KeyShareStore() rbstorage.KeyShareStorage {
-	return r.shareStore
-}
-
 func (r *Runtime) handleKeygen(msg jetstream.Msg) {
 	target, err := routing.ParseDirectRequestSubject(msg.Subject())
 	if err != nil {
@@ -217,13 +213,18 @@ func (r *Runtime) handleKeygen(msg jetstream.Msg) {
 		_ = msg.Ack()
 		return
 	}
-	if !rbtypes.ContainsParticipantID(req.Session.Participants, r.cfg.Runtime.ParticipantID) {
+	localParticipant, ok := rbtypes.ParticipantByID(req.Session.Participants, r.cfg.Runtime.ParticipantID)
+	if !ok {
+		_ = msg.Ack()
+		return
+	}
+	if rbtypes.IsExternalParticipant(localParticipant) {
 		_ = msg.Ack()
 		return
 	}
 	r.acquireKeygenGate()
 	defer r.releaseKeygenGate()
-	runKey := sessionRunKey(req.Session)
+	runKey := sessionRunKey(req.Session, r.cfg.Runtime.ParticipantID)
 	if !r.tryStartRun(runKey) {
 		logger.Info(
 			"Skip duplicate relaybridge keygen request while session is active",
@@ -285,6 +286,15 @@ func (r *Runtime) handleSign(msg jetstream.Msg) {
 		_ = msg.Ack()
 		return
 	}
+	localParticipant, ok := rbtypes.ParticipantByID(req.Session.Participants, r.cfg.Runtime.ParticipantID)
+	if !ok {
+		_ = msg.Ack()
+		return
+	}
+	if rbtypes.IsExternalParticipant(localParticipant) {
+		_ = msg.Ack()
+		return
+	}
 
 	recipients, err := rbtypes.SelectedParticipants(req.Session.Participants, req.SignerIndexes)
 	if err != nil {
@@ -296,7 +306,7 @@ func (r *Runtime) handleSign(msg jetstream.Msg) {
 		_ = msg.Ack()
 		return
 	}
-	runKey := sessionRunKey(req.Session)
+	runKey := sessionRunKey(req.Session, r.cfg.Runtime.ParticipantID)
 	if !r.tryStartRun(runKey) {
 		logger.Info(
 			"Skip duplicate relaybridge sign request while session is active",
@@ -403,7 +413,6 @@ func applyRequestTarget(session *rbtypes.SessionContext, target routing.RequestT
 		return fmt.Errorf("session.protocol %q does not match request target %q", session.Protocol, target.Protocol)
 	}
 	session.Operation = target.Operation
-	session.LocalParticipantID = target.ParticipantID
 	return nil
 }
 
@@ -476,8 +485,8 @@ func effectiveKeygenConcurrency(cfg rbconfig.Config) int {
 	return cfg.Consumer.MaxConcurrentKeygen
 }
 
-func sessionRunKey(session rbtypes.SessionContext) string {
-	return strings.TrimSpace(session.SessionID) + "::" + strings.TrimSpace(session.LocalParticipantID)
+func sessionRunKey(session rbtypes.SessionContext, participantID string) string {
+	return strings.TrimSpace(session.SessionID) + "::" + strings.TrimSpace(participantID)
 }
 
 func (r *Runtime) tryStartRun(key string) bool {

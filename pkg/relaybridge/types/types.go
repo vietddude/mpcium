@@ -33,25 +33,31 @@ type Participant struct {
 }
 
 type SessionContext struct {
-	SessionID          string        `json:"session_id"`
-	WalletID           string        `json:"wallet_id"`
-	Protocol           Protocol      `json:"protocol"`
-	Operation          Operation     `json:"operation"`
-	LocalParticipantID string        `json:"local_participant_id"`
-	Threshold          uint16        `json:"threshold"`
-	Participants       []Participant `json:"participants"`
+	SessionID          string
+	WalletID           string
+	Protocol           Protocol
+	Operation          Operation
+	Threshold          uint16
+	Participants       []Participant
+	LocalParticipantID string
 }
 
 type KeygenRequest struct {
-	Session SessionContext `json:"session"`
+	SessionID    string        `json:"session_id"`
+	WalletID     string        `json:"wallet_id"`
+	Protocol     Protocol      `json:"protocol"`
+	Threshold    uint16        `json:"threshold"`
+	Participants []Participant `json:"participants"`
 }
 
 type SignRequest struct {
-	Session          SessionContext `json:"session"`
-	SignerIndexes    []uint16       `json:"signer_indexes"`
-	MessageDigestHex string         `json:"message_digest_hex"`
-	ChainCodeHex     string         `json:"chain_code_hex,omitempty"`
-	DerivationPath   []uint32       `json:"derivation_path,omitempty"`
+	SessionID      string        `json:"session_id"`
+	WalletID       string        `json:"wallet_id"`
+	Protocol       Protocol      `json:"protocol"`
+	Participants   []Participant `json:"participants"`
+	MessageDigest  []byte        `json:"message_digest"`
+	ChainCode      []byte        `json:"chain_code,omitempty"`
+	DerivationPath []uint32      `json:"derivation_path,omitempty"`
 }
 
 type KeygenResult struct {

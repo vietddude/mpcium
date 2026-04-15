@@ -5,19 +5,18 @@ import (
 	"strings"
 
 	relayprotocol "github.com/fystack/mpcium/internal/relay/protocol"
-	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
+	rbtypes "github.com/fystack/mpcium/pkg/relaybridge/types"
 )
 
 const (
-	// Request streams keep one stream per operation, but subjects are still partitioned
-	// by participant/wallet/session so consumers can filter down to one internal node.
+	// Request streams keep one stream per operation.
 	KeygenRequestStream  = "mpc-sdk-keygen"
 	SignRequestStream    = "mpc-sdk-sign"
 	KeygenConsumerStream = "mpc-sdk-keygen-consumer"
 	SignConsumerStream   = "mpc-sdk-sign-consumer"
 
 	// Direct internal request subjects:
-	//   mpc.sdk.req.<participant_id>.<wallet_id>.<protocol>.<operation>.<session_id>
+	//   mpc.sdk.req.<wallet_id>.<protocol>.<operation>.<session_id>
 	requestSubjectPrefix = "mpc.sdk.req"
 
 	// Direct internal session subjects:
@@ -43,25 +42,23 @@ const (
 )
 
 // RequestTarget is the normalized routing info extracted back from a request subject.
-// After parsing we know who should handle it, for which wallet/session, and which operation.
+// After parsing we know wallet/session/protocol/operation.
 type RequestTarget struct {
-	ParticipantID string
-	WalletID      string
-	Protocol      rbtypes.Protocol
-	Operation     rbtypes.Operation
-	SessionID     string
+	WalletID  string
+	Protocol  rbtypes.Protocol
+	Operation rbtypes.Operation
+	SessionID string
 }
 
-// KeygenRequestSubject builds the direct NATS request subject for one internal node:
-// mpc.sdk.req.<participant_id>.<wallet_id>.<protocol>.keygen.<session_id>
-func KeygenRequestSubject(participantID, walletID string, protocol rbtypes.Protocol, sessionID string) string {
-	return directRequestSubject(participantID, walletID, protocol, rbtypes.OperationKeygen, sessionID)
+// KeygenRequestSubject builds the direct NATS keygen subject:
+// mpc.sdk.req.<wallet_id>.<protocol>.keygen.<session_id>
+func KeygenRequestSubject(walletID string, protocol rbtypes.Protocol, sessionID string) string {
+	return directRequestSubject(walletID, protocol, rbtypes.OperationKeygen, sessionID)
 }
 
-// KeygenRequestFilterSubject is what one runtime subscribes to in order to receive all
-// keygen requests targeted at that participant, regardless of wallet/session/protocol.
-func KeygenRequestFilterSubject(participantID string) string {
-	return directRequestFilterSubject(participantID, rbtypes.OperationKeygen)
+// KeygenRequestFilterSubject is what each runtime subscribes to for keygen requests.
+func KeygenRequestFilterSubject() string {
+	return directRequestFilterSubject(rbtypes.OperationKeygen)
 }
 
 // KeygenRequestTopic is the stream-wide wildcard subject for all keygen requests.
@@ -69,15 +66,15 @@ func KeygenRequestTopic() string {
 	return directRequestTopic(rbtypes.OperationKeygen)
 }
 
-// SignRequestSubject builds the direct NATS request subject for one internal node:
-// mpc.sdk.req.<participant_id>.<wallet_id>.<protocol>.sign.<session_id>
-func SignRequestSubject(participantID, walletID string, protocol rbtypes.Protocol, sessionID string) string {
-	return directRequestSubject(participantID, walletID, protocol, rbtypes.OperationSign, sessionID)
+// SignRequestSubject builds the direct NATS sign subject:
+// mpc.sdk.req.<wallet_id>.<protocol>.sign.<session_id>
+func SignRequestSubject(walletID string, protocol rbtypes.Protocol, sessionID string) string {
+	return directRequestSubject(walletID, protocol, rbtypes.OperationSign, sessionID)
 }
 
-// SignRequestFilterSubject is the per-runtime wildcard for sign requests.
-func SignRequestFilterSubject(participantID string) string {
-	return directRequestFilterSubject(participantID, rbtypes.OperationSign)
+// SignRequestFilterSubject is the wildcard for sign requests.
+func SignRequestFilterSubject() string {
+	return directRequestFilterSubject(rbtypes.OperationSign)
 }
 
 // SignRequestTopic is the stream-wide wildcard subject for all sign requests.
@@ -182,13 +179,13 @@ func SignRelayRequestSubject(participantID, walletID string, protocol rbtypes.Pr
 }
 
 // ParseDirectRequestSubject reverses:
-// mpc.sdk.req.<participant_id>.<wallet_id>.<protocol>.<operation>.<session_id>
+// mpc.sdk.req.<wallet_id>.<protocol>.<operation>.<session_id>
 func ParseDirectRequestSubject(subject string) (RequestTarget, error) {
 	parts := strings.Split(subject, ".")
-	if len(parts) != 8 || strings.Join(parts[:3], ".") != requestSubjectPrefix {
+	if len(parts) != 7 || strings.Join(parts[:3], ".") != requestSubjectPrefix {
 		return RequestTarget{}, fmt.Errorf("invalid relaybridge direct request subject %q", subject)
 	}
-	return buildRequestTarget(parts[3], parts[4], parts[5], parts[6], parts[7], subject)
+	return buildRequestTarget(parts[3], parts[4], parts[5], parts[6], subject)
 }
 
 // ParseRelayRequestSubject reverses:
@@ -201,7 +198,10 @@ func ParseRelayRequestSubject(subject string) (RequestTarget, error) {
 	if parts[5] != relayRequestTailPrefix {
 		return RequestTarget{}, fmt.Errorf("invalid relaybridge relay request subject %q", subject)
 	}
-	return buildRequestTarget(parts[3], parts[4], parts[6], parts[7], parts[8], subject)
+	if strings.TrimSpace(parts[3]) == "" {
+		return RequestTarget{}, fmt.Errorf("invalid relaybridge relay request subject %q", subject)
+	}
+	return buildRequestTarget(parts[4], parts[6], parts[7], parts[8], subject)
 }
 
 func scopedSubject(prefix, clientID, tail string) string {
@@ -213,10 +213,9 @@ func scopedSubject(prefix, clientID, tail string) string {
 	return strings.Join(parts, ".")
 }
 
-func directRequestSubject(participantID, walletID string, protocol rbtypes.Protocol, operation rbtypes.Operation, sessionID string) string {
+func directRequestSubject(walletID string, protocol rbtypes.Protocol, operation rbtypes.Operation, sessionID string) string {
 	return strings.Join([]string{
 		requestSubjectPrefix,
-		strings.TrimSpace(participantID),
 		strings.TrimSpace(walletID),
 		string(protocol),
 		string(operation),
@@ -224,10 +223,9 @@ func directRequestSubject(participantID, walletID string, protocol rbtypes.Proto
 	}, ".")
 }
 
-func directRequestFilterSubject(participantID string, operation rbtypes.Operation) string {
+func directRequestFilterSubject(operation rbtypes.Operation) string {
 	return strings.Join([]string{
 		requestSubjectPrefix,
-		strings.TrimSpace(participantID),
 		"*",
 		"*",
 		string(operation),
@@ -238,7 +236,6 @@ func directRequestFilterSubject(participantID string, operation rbtypes.Operatio
 func directRequestTopic(operation rbtypes.Operation) string {
 	return strings.Join([]string{
 		requestSubjectPrefix,
-		"*",
 		"*",
 		"*",
 		string(operation),
@@ -257,7 +254,7 @@ func relayRequestSubject(participantID, walletID string, protocol rbtypes.Protoc
 	)
 }
 
-func buildRequestTarget(participantID, walletID, protocolValue, operationValue, sessionID, subject string) (RequestTarget, error) {
+func buildRequestTarget(walletID, protocolValue, operationValue, sessionID, subject string) (RequestTarget, error) {
 	protocol := rbtypes.Protocol(strings.TrimSpace(protocolValue))
 	switch protocol {
 	case rbtypes.ProtocolECDSA, rbtypes.ProtocolEdDSA:
@@ -272,13 +269,12 @@ func buildRequestTarget(participantID, walletID, protocolValue, operationValue, 
 	}
 
 	target := RequestTarget{
-		ParticipantID: strings.TrimSpace(participantID),
-		WalletID:      strings.TrimSpace(walletID),
-		Protocol:      protocol,
-		Operation:     operation,
-		SessionID:     strings.TrimSpace(sessionID),
+		WalletID:  strings.TrimSpace(walletID),
+		Protocol:  protocol,
+		Operation: operation,
+		SessionID: strings.TrimSpace(sessionID),
 	}
-	if target.ParticipantID == "" || target.WalletID == "" || target.SessionID == "" {
+	if target.WalletID == "" || target.SessionID == "" {
 		return RequestTarget{}, fmt.Errorf("invalid relaybridge request subject %q", subject)
 	}
 	return target, nil

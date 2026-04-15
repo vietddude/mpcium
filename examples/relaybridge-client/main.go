@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	rbclient "github.com/fystack/mpcium/internal/relaybridge/client"
 	rbtypes "github.com/fystack/mpcium/internal/relaybridge/types"
+	rbclient "github.com/fystack/mpcium/pkg/relaybridge/client"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 )

@@ -315,13 +315,26 @@ func publishForParticipants(
 	default:
 		t.Fatalf("unsupported publish value type %T", value)
 	}
-	for _, participant := range participants {
-		subject := routing.KeygenRequestSubject(participant.ID, walletID, protocol, sessionID)
+	subject := routing.KeygenRequestSubject(walletID, protocol, sessionID)
+	if operation == rbtypes.OperationSign {
+		subject = routing.SignRequestSubject(walletID, protocol, sessionID)
+	}
+	require.NoError(t, nc.PublishMsg(&nats.Msg{
+		Subject: subject,
+		Data:    payload,
+		Header:  nats.Header{event.ClientIDHeader: []string{clientID}},
+	}))
+
+	for _, participant := range rbtypes.UniqueParticipants(participants) {
+		if !rbtypes.IsExternalParticipant(participant) {
+			continue
+		}
+		relaySubject := routing.KeygenRelayRequestSubject(participant.ID, walletID, protocol, sessionID)
 		if operation == rbtypes.OperationSign {
-			subject = routing.SignRequestSubject(participant.ID, walletID, protocol, sessionID)
+			relaySubject = routing.SignRelayRequestSubject(participant.ID, walletID, protocol, sessionID)
 		}
 		require.NoError(t, nc.PublishMsg(&nats.Msg{
-			Subject: subject,
+			Subject: relaySubject,
 			Data:    payload,
 			Header:  nats.Header{event.ClientIDHeader: []string{clientID}},
 		}))
