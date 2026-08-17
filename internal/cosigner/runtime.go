@@ -269,14 +269,26 @@ func (r *Runtime) handleControl(raw []byte) error {
 		return nil
 	}
 	if msg.SessionAbort != nil {
-		// Current SDK participant session doesn't handle SessionAbort control messages.
-		// Treat abort as terminal, clean up local session state, and stop processing.
 		logger.Warn("cosigner received session abort",
 			"participant_id", r.cfg.ParticipantID,
 			"session_id", msg.SessionID,
 			"reason", msg.SessionAbort.Reason,
 			"detail", msg.SessionAbort.Detail,
 		)
+		// Reshare sessions must route abort through the SDK so the staged share
+		// rotation is discarded (AbortShareRotation) and the active share is
+		// preserved. Other operations have no durable rotation to unwind, so we
+		// keep the lightweight local teardown for them.
+		if meta.action == actionLabel(sdkprotocol.OperationTypeReshare) {
+			if actions, err := session.HandleControl(&msg); err != nil {
+				logger.Error("session handle reshare abort failed", err,
+					"participant_id", r.cfg.ParticipantID,
+					"session_id", msg.SessionID,
+				)
+			} else if err := r.dispatchActions(actions); err != nil {
+				logger.Warn("failed dispatching reshare abort actions", "session_id", msg.SessionID, "error", err)
+			}
+		}
 		logger.Info("cosigner session ended",
 			"participant_id", r.cfg.ParticipantID,
 			"session_id", msg.SessionID,
@@ -315,8 +327,17 @@ func (r *Runtime) startSession(msg *sdkprotocol.ControlMessage, meta sessionMeta
 	if err := r.verifyControlSignature(msg); err != nil {
 		return err
 	}
-	peerKeys := make(map[string]ed25519.PublicKey, len(msg.SessionStart.Participants))
-	for _, participantDef := range msg.SessionStart.Participants {
+	// For reshare the peer set is the UNION of the old committee
+	// (SessionStart.Participants) and the new committee
+	// (Reshare.NewParticipants). A new-only member would otherwise be
+	// unresolvable, and an overlap member runs both the OLD and NEW tss party
+	// inside its single session — both roles must reach every peer.
+	participantDefs := msg.SessionStart.Participants
+	if msg.SessionStart.Operation == sdkprotocol.OperationTypeReshare && msg.SessionStart.Reshare != nil {
+		participantDefs = unionParticipantDefinitions(msg.SessionStart.Participants, msg.SessionStart.Reshare.NewParticipants)
+	}
+	peerKeys := make(map[string]ed25519.PublicKey, len(participantDefs))
+	for _, participantDef := range participantDefs {
 		if participantDef.ParticipantID == r.cfg.ParticipantID {
 			continue
 		}
@@ -330,6 +351,7 @@ func (r *Runtime) startSession(msg *sdkprotocol.ControlMessage, meta sessionMeta
 		Orchestrator:       r.orchestratorLookup,
 		Preparams:          r.stores,
 		Shares:             r.stores,
+		ShareRotations:     r.stores,
 		SessionCheckpoint:  r.stores,
 	})
 	if err != nil {
@@ -583,6 +605,8 @@ func controlType(msg *sdkprotocol.ControlMessage) string {
 		return "key_exchange_begin"
 	case msg.MPCBegin != nil:
 		return "mpc_begin"
+	case msg.ReshareCommit != nil:
+		return "reshare_commit"
 	case msg.SessionAbort != nil:
 		return "session_abort"
 	case msg.SessionStart != nil:
@@ -703,6 +727,35 @@ func (r *Runtime) publishPresenceOnShutdown() {
 	}
 }
 
+// unionParticipantDefinitions merges the old and new reshare committees by
+// participant ID (new definitions win on overlap). Every device that runs any
+// reshare role must be able to resolve every peer, so peer lookup is built from
+// this union rather than the old committee alone.
+func unionParticipantDefinitions(oldParticipants, newParticipants []*sdkprotocol.SessionParticipant) []*sdkprotocol.SessionParticipant {
+	byID := make(map[string]*sdkprotocol.SessionParticipant, len(oldParticipants)+len(newParticipants))
+	order := make([]string, 0, len(oldParticipants)+len(newParticipants))
+	add := func(p *sdkprotocol.SessionParticipant) {
+		if p == nil {
+			return
+		}
+		if _, ok := byID[p.ParticipantID]; !ok {
+			order = append(order, p.ParticipantID)
+		}
+		byID[p.ParticipantID] = p
+	}
+	for _, p := range oldParticipants {
+		add(p)
+	}
+	for _, p := range newParticipants {
+		add(p)
+	}
+	result := make([]*sdkprotocol.SessionParticipant, 0, len(order))
+	for _, id := range order {
+		result = append(result, byID[id])
+	}
+	return result
+}
+
 func hasControlBody(msg *sdkprotocol.ControlMessage) bool {
 	if msg == nil {
 		return false
@@ -710,5 +763,6 @@ func hasControlBody(msg *sdkprotocol.ControlMessage) bool {
 	return msg.SessionStart != nil ||
 		msg.KeyExchange != nil ||
 		msg.MPCBegin != nil ||
+		msg.ReshareCommit != nil ||
 		msg.SessionAbort != nil
 }
